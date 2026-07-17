@@ -24,8 +24,12 @@ through `PaddingProperty`, while one shared value grammar such as `CssColor` can
 - Explicit `_unchecked` methods and parsing escape hatches for unsupported CSS
 - Small inline storage for common style counts
 
-The `typed-css` feature is enabled by default. It provides the checked declaration API and re-exports the typed values
-and property selectors under `leptos_styles::css` and `leptos_styles::property`.
+Cargo features:
+
+- `typed-css` is enabled by default. It provides the checked declaration API and re-exports typed values and property
+  selectors under `leptos_styles::css` and `leptos_styles::property`.
+- `nightly` forwards nightly support to Leptos and to `leptos-css` when `typed-css` is enabled. Reactive sources use
+  the same explicit closure syntax on stable and nightly.
 
 ## Installation
 
@@ -41,11 +45,13 @@ cargo add leptos-styles --no-default-features
 
 `leptos-styles` is compatible with Leptos 0.8 and requires Rust 1.89 or newer.
 
-## Checked example
+## Checked quick start
+
+Build styles in a caller, pass them through a component prop, and extend them in the receiving component:
 
 ```rust
-# #[cfg(feature = "typed-css")]
-# mod checked_example {
+#[cfg(feature = "typed-css")]
+mod checked_example {
 use leptos::prelude::*;
 use leptos_styles::{
     Styles,
@@ -66,25 +72,21 @@ fn Panel(
 
 #[component]
 fn Demo() -> impl IntoView {
-    let (accent, _) = signal(Some(CssColor::Named(CssColorName::Fuchsia)));
-
     view! {
         <Panel styles=Styles::builder()
-            .with_optional(move || {
-                accent.get().map(|color| ColorProperty.declare(color))
-            })
+            .with(ColorProperty.declare(CssColor::Named(CssColorName::Fuchsia)))
             .build()
         />
     }
 }
-# }
+}
 ```
 
 The selector names say which declaration is being built; the value types describe only the accepted value grammar:
 
 ```rust
-# #[cfg(feature = "typed-css")]
-# {
+#[cfg(feature = "typed-css")]
+{
 use leptos_styles::{
     Styles,
     css::rgb,
@@ -100,14 +102,14 @@ assert_eq!(
     styles.to_style_string(),
     "color:rgb(255, 0, 0);background-color:rgb(255, 0, 0);",
 );
-# }
+}
 ```
 
 Always-present reactive values do not need to be wrapped in `Some`:
 
 ```rust
-# #[cfg(feature = "typed-css")]
-# {
+#[cfg(feature = "typed-css")]
+{
 use leptos::prelude::*;
 use leptos_styles::{Styles, css::rgb, property::ColorProperty};
 
@@ -122,31 +124,7 @@ owner.with(|| {
     set_color.set(rgb(0, 0, 255));
     assert_eq!(styles.to_style_string(), "color:rgb(0, 0, 255);");
 });
-# }
-```
-
-For direct element use, `leptos-css` property selectors construct the same concrete boundary:
-
-```rust
-# #[cfg(feature = "typed-css")]
-# {
-use leptos_styles::{
-    CheckedDeclaration,
-    css::{Padding, px, rgb},
-    property::{ColorProperty, PaddingProperty},
-};
-
-let declaration = PaddingProperty.declare(Padding::all(px(16)));
-assert_eq!(declaration.property_name(), "padding");
-
-// Distinct checked grammars erase into one storable declaration type.
-let declarations: Vec<CheckedDeclaration> = vec![
-    declaration,
-    ColorProperty.declare(rgb(255, 0, 0)),
-];
-let styles = leptos_styles::Styles::new().add_declarations(declarations);
-assert_eq!(styles.to_style_string(), "padding:16px;color:rgb(255, 0, 0);");
-# }
+}
 ```
 
 ## API overview
@@ -162,6 +140,32 @@ The builder and chaining APIs mirror one another:
   accepts its CSS-wide keyword through `declare(keyword)`.
 - `with_declarations(iter)` / `add_declarations(iter)` add heterogeneous prebuilt declarations.
 - `merge(other)` treats `other` as a lower-priority fallback layer.
+
+Merge priority is resolved per property, so declarations absent from the higher-priority layer still fall through:
+
+```rust
+#[cfg(feature = "typed-css")]
+{
+use leptos_styles::{
+    Styles,
+    css::{CssColor, CssColorName, Padding, px},
+    property::{ColorProperty, PaddingProperty},
+};
+
+let defaults = Styles::builder()
+    .with(ColorProperty.declare(CssColor::Named(CssColorName::Blue)))
+    .with(PaddingProperty.declare(Padding::all(px(16))))
+    .build();
+let local = Styles::builder()
+    .with(ColorProperty.declare(CssColor::Named(CssColorName::Red)))
+    .build();
+
+assert_eq!(
+    local.merge(defaults).to_style_string(),
+    "color:red;padding:16px;",
+);
+}
+```
 
 Every reactive entry is resolved exactly once per serialization pass. The renderer snapshots the complete declaration
 before calculating merge winners, so a source that changes from `color:red` to `background-color:red` cannot expose a
@@ -190,10 +194,12 @@ assert_eq!(
 );
 ```
 
-`Styles::parse_css("color: red; padding: 1rem")`, `StyleEntry::parse(...)`, `FromStr`, and `TryFrom` are intended for
-existing or copy-pasted CSS. There are deliberately no raw tuple conversions and the `PropertyName` catalog is not an
-unchecked bridge into the checked API. Public raw storage names are explicitly labeled `UncheckedPropertyName` and
-`UncheckedStyleValue`, and property-name conversion goes through `IntoUncheckedPropertyName`.
+`StyleEntry::parse(...)` parses one unchecked declaration, while `Styles::parse_css(...)`, `FromStr`, and `TryFrom`
+parse a simple semicolon-separated declaration list. These are structural conveniences, not a full CSS parser or
+validator. Add values that contain semicolons, such as data URLs, through the `_unchecked` builders instead. There are
+deliberately no raw tuple conversions, and the `PropertyName` catalog is not an unchecked bridge into the checked API.
+Public raw storage names are explicitly labeled `UncheckedPropertyName` and `UncheckedStyleValue`, and property-name
+conversion goes through `IntoUncheckedPropertyName`.
 
 ## Rendering semantics
 
@@ -206,8 +212,8 @@ unchecked bridge into the checked API. Public raw storage names are explicitly l
 - `None` declarations are omitted. If every declaration resolves to `None`, the entire `style` attribute is removed.
 - Standard unchecked property names are trimmed and ASCII-lowercased; unchecked custom properties beginning with `--`
   preserve their case.
-- For each property, the lowest-numbered merge-priority group that currently resolves to a declaration wins. Entries
-  within the same group preserve insertion order, including intentional duplicates.
+- For each resolved property, the highest-priority merge layer wins. Entries within the same layer preserve insertion
+  order, including intentional duplicates.
 
 `Styles` owns the entire `style` attribute of the target element. A reactive update replaces the full value, so mixing
 `style=styles` on one element with `style:foo=...`, imperative style mutations, or third-party attribute mutations can
