@@ -38,8 +38,8 @@ Other useful commands:
 
 - `just browser-test-visible` opens Chrome; `just browser-test-pause` also pauses for inspection.
 - `just serve-test-app` serves the fixture at `127.0.0.1:4200`.
-- `just audit` and `just deny` run the blocking supply-chain checks. `just semver-check` remains
-  non-gating until version 0.1.0 provides a registry baseline.
+- `just deny` runs the blocking supply-chain checks. `just semver-check` remains non-gating until
+  version 0.1.0 provides a registry baseline.
 - When changing optional-source conversions, also check the nightly shapes directly:
   `cargo check --all-targets --features nightly` and
   `cargo check --all-targets --no-default-features --features nightly`.

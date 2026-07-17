@@ -13,7 +13,6 @@ install-tools:
   cargo install just
   cargo install cargo-leptos
   cargo install wasm-bindgen-cli --version 0.2.125 --locked
-  cargo install cargo-audit
   cargo install cargo-deny
   cargo install cargo-semver-checks
   cargo install leptosfmt
@@ -109,10 +108,6 @@ browser-test-visible:
 # Start the test app and pause before running browser assertions.
 browser-test-pause:
   BROWSER_TEST_VISIBLE=1 BROWSER_TEST_PAUSE=1 cargo test --test browser_test -- --nocapture
-
-# Scan Cargo.lock against the RustSec advisory database.
-audit:
-  cargo audit
 
 # Run cargo-deny's supply-chain checks (advisories, bans, sources).
 deny:
