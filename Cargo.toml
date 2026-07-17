@@ -41,7 +41,7 @@ typed-css = ["dep:leptos-css"]
 
 [dependencies]
 leptos = { version = "0.8.19", default-features = false }
-leptos-css = { version = "0.1.0", path = "../leptos-css", optional = true }
+leptos-css = { version = "0.1.0", optional = true }
 reactive_graph = "0.2.13"
 smallvec = "1"
 tracing = "0.1.44"
