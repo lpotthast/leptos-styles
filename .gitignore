@@ -1,2 +1,4 @@
-target
+/.codegraph
+/target
+/testing/test-app/target
 .DS_Store

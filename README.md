@@ -1,26 +1,55 @@
 # leptos-styles
 
-`leptos-styles` is a small utility crate for passing inline styles through Leptos component layers without flattening them into a plain `String` too early.
+[![crates.io](https://img.shields.io/crates/v/leptos-styles.svg)](https://crates.io/crates/leptos-styles)
+[![docs.rs](https://docs.rs/leptos-styles/badge.svg)](https://docs.rs/leptos-styles)
+[![CI](https://github.com/lpotthast/leptos-styles/actions/workflows/ci.yml/badge.svg)](https://github.com/lpotthast/leptos-styles/actions/workflows/ci.yml)
+[![MSRV](https://img.shields.io/badge/rust-1.89%2B-blue.svg)](https://www.rust-lang.org/)
 
-It is designed for component props like `#[prop(into, optional)] styles: Styles`, where intermediate components can keep extending the style list and the final element can still render it reactively with `style=styles`.
+`leptos-styles` is a prop-drillable, reactive inline-style container for Leptos. Components can extend a `Styles`
+value through several layers, then render the accumulated declarations directly with `style=styles`.
+
+The default API integrates [`leptos-css`](https://crates.io/crates/leptos-css) and preserves its central guarantee:
+a checked property and its checked value grammar are never stored separately. A `Padding` can enter the container only
+through `PaddingProperty`, while one shared value grammar such as `CssColor` can be selected for `ColorProperty` or
+`BackgroundColorProperty` without losing which declaration was built.
 
 ## Features
 
-- Static and optional style entries in one container
-- Reactive updates through Leptos signals
-- Builder and chaining APIs
-- `IntoStyle` integration for `style=styles`
-- Typed CSS values for dimensions, colors, angles, times, and expressions
+- Property-first checked construction with `.with(Property, value)` and `.add(Property, value)`
+- Owned, heterogeneous `CheckedDeclaration` values for prebuilding, storing, and prop drilling declarations
+- Static, optional, and always-present reactive declarations in one container
+- Priority-aware merging where a lower layer acts as a fallback for the current resolved property
+- Direct Leptos `IntoStyle` integration for `style=styles`
+- Explicit `_unchecked` methods and parsing escape hatches for unsupported CSS
 - Small inline storage for common style counts
 
-## Example
+The `typed-css` feature is enabled by default. It provides the checked declaration API and re-exports the typed values
+and property selectors under `leptos_styles::css` and `leptos_styles::property`.
+
+## Installation
+
+```bash
+cargo add leptos-styles
+```
+
+To build only the unchecked string container without depending on `leptos-css`:
+
+```bash
+cargo add leptos-styles --no-default-features
+```
+
+`leptos-styles` is compatible with Leptos 0.8 and requires Rust 1.89 or newer.
+
+## Checked example
 
 ```rust
+# #[cfg(feature = "typed-css")]
+# mod checked_example {
 use leptos::prelude::*;
 use leptos_styles::{
-    Style::*,
     Styles,
-    css::{CssValue, pct, px},
+    css::{CssColor, CssColorName, Padding, px},
+    property::{ColorProperty, PaddingProperty},
 };
 
 #[component]
@@ -28,7 +57,7 @@ fn Panel(
     #[prop(into, optional)] styles: Styles,
 ) -> impl IntoView {
     view! {
-        <section style=styles.add(Padding, px(16))>
+        <section style=styles.add(PaddingProperty, Padding::all(px(16)))>
             "Content"
         </section>
     }
@@ -36,66 +65,182 @@ fn Panel(
 
 #[component]
 fn Demo() -> impl IntoView {
-    let (accent, _) = signal(Some(CssValue::from("tomato")));
-    let (offset, _) = signal(Some(CssValue::from(px(24))));
+    let (accent, _) = signal(Some(CssColor::Named(CssColorName::Fuchsia)));
 
     view! {
         <Panel styles=Styles::builder()
-            .with(Display, "grid")
-            .with(Width, pct(100))
-            .with_optional(Color, accent)
-            .with_optional(Top, offset)
+            .with_optional(ColorProperty, accent)
             .build()
         />
     }
 }
+# }
 ```
 
-## API Overview
+The selector names say which declaration is being built; the value types describe only the accepted value grammar:
 
-- `Styles::new()` creates an empty container.
-- `Styles::add(property, value)` appends one style entry and returns the updated value.
-- `Styles::add_optional(property, value)` appends a style that can resolve to `None`.
-- `Styles::add_entry(...)` and `Styles::add_all(...)` work with prebuilt `StyleEntry` values.
-- `Styles::builder()` offers the same operations with `with(...)`, `with_optional(...)`, `with_entry(...)`, and `with_all(...)`.
-- `Styles::merge(other)` combines lower-priority fallback styles into higher-priority styles. If the higher-priority value for a property resolves to `None`, the lower-priority value can render as a fallback.
-- `Styles::to_style_string()` materializes the currently active styles into a `String`.
+```rust
+# #[cfg(feature = "typed-css")]
+# {
+use leptos_styles::{
+    Styles,
+    css::rgb,
+    property::{BackgroundColorProperty, ColorProperty},
+};
 
-## Supported Inputs
+let styles = Styles::builder()
+    .with(ColorProperty, rgb(255, 0, 0))
+    .with(BackgroundColorProperty, rgb(255, 0, 0))
+    .build();
 
-`StyleEntry` and `Styles` support common conversions:
+assert_eq!(
+    styles.to_style_string(),
+    "color:rgb(255, 0, 0);background-color:rgb(255, 0, 0);",
+);
+# }
+```
 
-- `("color", "red")`
-- `(Style::Width, px(320))`
-- `("background-color", Some("tomato"))`
-- `(Style::Top, Signal<Option<CssValue>>)`
-- `(Style::Opacity, move || Some(CssValue::from("0.8")))`
-- arrays of the forms above for `Styles`
+Always-present reactive values do not need to be wrapped in `Some`:
 
-## Rendering Semantics
+```rust
+# #[cfg(feature = "typed-css")]
+# {
+use leptos::prelude::*;
+use leptos_styles::{Styles, css::rgb, property::ColorProperty};
+
+let owner = Owner::new();
+owner.with(|| {
+    let (color, set_color) = signal(rgb(255, 0, 0));
+    let styles = Styles::builder()
+        .with_reactive(ColorProperty, color)
+        .build();
+
+    assert_eq!(styles.to_style_string(), "color:rgb(255, 0, 0);");
+    set_color.set(rgb(0, 0, 255));
+    assert_eq!(styles.to_style_string(), "color:rgb(0, 0, 255);");
+});
+# }
+```
+
+For direct element use, `leptos-css` property selectors construct the same concrete boundary:
+
+```rust
+# #[cfg(feature = "typed-css")]
+# {
+use leptos_styles::{
+    CheckedDeclaration,
+    css::{Padding, px, rgb},
+    property::{ColorProperty, PaddingProperty},
+};
+
+let declaration = PaddingProperty.declare(Padding::all(px(16)));
+assert_eq!(declaration.property_name(), "padding");
+
+// Distinct checked grammars erase into one storable declaration type.
+let declarations: Vec<CheckedDeclaration> = vec![
+    declaration,
+    ColorProperty.declare(rgb(255, 0, 0)),
+];
+let styles = leptos_styles::Styles::new().add_declarations(declarations);
+assert_eq!(styles.to_style_string(), "padding:16px;color:rgb(255, 0, 0);");
+# }
+```
+
+## API overview
+
+The builder and chaining APIs mirror one another:
+
+- `with(property, value)` / `add(property, value)` construct one checked declaration.
+- `with_optional(property, source)` / `add_optional(property, source)` accept `Option`, `Signal<Option<_>>`,
+  `ReadSignal<Option<_>>`, or a closure returning `Option<_>` while keeping the selected property grammar.
+- `with_reactive(property, source)` / `add_reactive(property, source)` accept an always-present `Signal<_>`,
+  `ReadSignal<_>`, or closure without requiring an artificial `Some(...)` wrapper.
+- `with_global(property, keyword)` / `add_global(property, keyword)` use a CSS-wide keyword through the ordinary
+  property's explicit checked path.
+- `with_declaration(declaration)` / `add_declaration(declaration)` accept a prebuilt `CheckedDeclaration` or parsed
+  `StyleEntry`.
+- `with_optional_declaration(source)` / `add_optional_declaration(source)` allow a reactive source to change its
+  complete declaration, including its property.
+- `with_declarations(iter)` / `add_declarations(iter)` add heterogeneous prebuilt declarations.
+- `merge(other)` treats `other` as a lower-priority fallback layer.
+
+Every reactive entry is resolved exactly once per serialization pass. The renderer snapshots the complete declaration
+before calculating merge winners, so a source that changes from `color:red` to `background-color:red` cannot expose a
+property from one evaluation and a value from another.
+
+`Styles::to_style_string()` materializes the current declarations. For elements, prefer `style=styles`; this reuses
+serialization buffers across reactive updates.
+
+## Unchecked CSS escape hatches
+
+Property coverage in `leptos-css` is intentionally incremental. Unsupported CSS remains available, but raw property
+names and values must be visibly opted into:
+
+```rust
+use leptos_styles::{StyleEntry, Styles};
+
+let styles = Styles::builder()
+    .with_unchecked("display", "grid")
+    .with_optional_unchecked("font-family", Some("system-ui"))
+    .build()
+    .add_declaration(StyleEntry::parse("contain: layout").unwrap());
+
+assert_eq!(
+    styles.to_style_string(),
+    "display:grid;font-family:system-ui;contain:layout;",
+);
+```
+
+`Styles::parse_css("color: red; padding: 1rem")`, `StyleEntry::parse(...)`, `FromStr`, and `TryFrom` are intended for
+existing or copy-pasted CSS. There are deliberately no raw tuple conversions and the `PropertyName` catalog is not an
+unchecked bridge into the checked API. Public raw storage names are explicitly labeled `UncheckedPropertyName` and
+`UncheckedStyleValue`, and property-name conversion goes through `IntoUncheckedPropertyName`.
+
+## Rendering semantics
 
 `Styles` implements Leptos' `IntoStyle` trait as a full `style="..."` attribute value.
 
 - On SSR, it serializes to a semicolon-separated style string.
-- On hydration and client-side rendering, it updates the element reactively when tracked signals change.
-- `None` values are omitted from the rendered style attribute.
-- Standard CSS property names are normalized by trimming whitespace and lowercasing ASCII letters.
-- CSS custom properties beginning with `--` preserve their original case.
-- CSS `var()` helpers accept custom property names with or without a leading `--` and normalize them before rendering.
-- `CssDimension::Auto` is not valid in dimension arithmetic and will panic if used with `+`, `-`, or unary `-`; use explicit string values when you need non-arithmetic CSS expressions involving `auto`.
+- On hydration, it reconciles against the element's current `style` attribute.
+- On client-side rendering, tracked signals update the element reactively.
+- Fully static containers avoid installing a reactive effect.
+- `None` declarations are omitted. If every declaration resolves to `None`, the entire `style` attribute is removed.
+- Standard unchecked property names are trimmed and ASCII-lowercased; unchecked custom properties beginning with `--`
+  preserve their case.
+- For each property, the lowest-numbered merge-priority group that currently resolves to a declaration wins. Entries
+  within the same group preserve insertion order, including intentional duplicates.
 
-`Styles` owns the complete `style` attribute for an element. Prefer `style=styles` on its own instead of mixing it with separate `style:*` directives on the same element.
+`Styles` owns the entire `style` attribute of the target element. A reactive update replaces the full value, so mixing
+`style=styles` on one element with `style:foo=...`, imperative style mutations, or third-party attribute mutations can
+overwrite the unmanaged value on the next update. `IntoStyle::reset()` removes the managed attribute and tears down
+reactive subscriptions while leaving the state rebuildable.
 
-If you need the final value outside the renderer path, use `to_style_string()`. For actual elements, prefer `style=styles`.
+## Related crates
+
+- [`leptos-css`](https://github.com/lpotthast/leptos-css) defines the checked property selectors, value grammars, and
+  owned `CheckedDeclaration` boundary used by the default API.
+- [`leptos-classes`](https://github.com/lpotthast/leptos-classes) is the class-attribute counterpart to this crate.
+- [`leptos-style`](https://github.com/RustForWeb/leptos-utils/tree/main/packages/leptos-style) (singular `style`) is a
+  smaller string-based prop-drilling crate.
 
 ## Testing
 
-The DOM lifecycle coverage for `leptos-styles` is exercised through a real browser integration test.
-From the repository root, run:
+Run the complete native, WASM, lint, documentation, and browser verification matrix with:
 
 ```bash
-cargo test --test browser_test -- --nocapture
+just verify
 ```
 
-This starts a dedicated crate-local Leptos test frontend with `cargo leptos serve`, then drives it through Chrome via
-`chrome-for-testing-manager` and `thirtyfour`.
+The browser test starts the crate-local Leptos frontend and exercises SSR, hydration, static/reactive transitions,
+merge fallback behavior, and direct checked-declaration value updates, property replacement, custom properties, and
+reset behavior in Chrome.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option. Contributions submitted for inclusion in the work are dual-licensed under the same terms.

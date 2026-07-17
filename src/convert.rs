@@ -1,240 +1,306 @@
-use std::borrow::Cow;
-
-use leptos::prelude::{Get, Signal};
+#[cfg(not(feature = "nightly"))]
+use leptos::prelude::Get;
+use leptos::prelude::Signal;
+#[cfg(not(feature = "nightly"))]
 use reactive_graph::signal::ReadSignal;
 
 use crate::{
-    IntoStyleProperty, Style, StyleEntry, StyleProperty, StyleValue, Styles,
-    css::{CssDimension, CssDimensionExpr, CssValue},
+    StyleEntry, Styles, UncheckedPropertyName, UncheckedStyleValue, style_entry::StyleDeclaration,
 };
 
-/// Trait for types that can be used as always-present CSS style values in the
-/// `.with(property, value)` and `.add(property, value)` methods on [`Styles`].
+/// Conversion from an optional source into an explicitly unchecked style entry.
 ///
-/// This enables the ergonomic syntax `.with(Position, "absolute")` instead of
-/// `.with((Position, "absolute"))`.
-pub trait IntoStyleEntryValue {
-    fn into_style_entry(self, property: StyleProperty) -> StyleEntry;
+/// This trait powers [`Styles::add_optional_unchecked`] and
+/// [`crate::StylesBuilder::with_optional_unchecked`].
+pub trait IntoOptionalUncheckedStyleValue<V> {
+    /// Pair the optional value source with an unchecked property name.
+    fn into_optional_unchecked_entry(self, property: UncheckedPropertyName) -> StyleEntry;
 }
 
-/// Trait for types that can be used as conditionally-present CSS style values in the
-/// `.with_optional(property, value)` and `.add_optional(property, value)` methods on [`Styles`].
-///
-/// When the value resolves to `None`, the style entry is excluded from the output.
-pub trait IntoOptionalStyleEntryValue {
-    fn into_style_entry(self, property: StyleProperty) -> StyleEntry;
-}
-
-/// Parses a style string like "color: red" into property and value parts.
-fn parse_style_string(s: &str) -> (Cow<'static, str>, Cow<'static, str>) {
-    if let Some((property, value)) = s.split_once(':') {
-        (
-            Cow::Owned(property.trim().to_string()),
-            Cow::Owned(value.trim().trim_end_matches(';').to_string()),
-        )
-    } else {
-        tracing::warn!(
-            "Style string '{}' missing ':'. Expected 'property: value'",
-            s
-        );
-        (Cow::Owned(s.trim().to_string()), Cow::Owned(String::new()))
-    }
-}
-
-/// Generates `From<(P, $val)> for StyleEntry` for all property types via `IntoStyleProperty`.
-macro_rules! impl_style_entry_always {
-    ($val:ty) => {
-        impl<P: IntoStyleProperty> From<(P, $val)> for StyleEntry {
-            fn from((p, v): (P, $val)) -> Self {
-                StyleEntry::always(p.into_property(), v)
-            }
-        }
-    };
-}
-
-impl_style_entry_always!(&'static str);
-impl_style_entry_always!(String);
-impl_style_entry_always!(CssValue);
-impl_style_entry_always!(CssDimension);
-impl_style_entry_always!(CssDimensionExpr);
-
-impl From<&'static str> for StyleEntry {
-    fn from(s: &'static str) -> Self {
-        let (property, value) = parse_style_string(s);
-        StyleEntry::always(property, value)
-    }
-}
-
-impl From<String> for StyleEntry {
-    fn from(s: String) -> Self {
-        let (property, value) = parse_style_string(&s);
-        StyleEntry::always(property, value)
-    }
-}
-
-macro_rules! impl_style_entry_reactive {
-    ($prop:ty, $to_prop:expr) => {
-        impl From<($prop, Signal<Option<StyleValue>>)> for StyleEntry {
-            fn from((p, v): ($prop, Signal<Option<StyleValue>>)) -> Self {
-                StyleEntry::reactive($to_prop(p), v)
-            }
-        }
-
-        impl From<($prop, Signal<Option<String>>)> for StyleEntry {
-            fn from((p, v): ($prop, Signal<Option<String>>)) -> Self {
-                StyleEntry::reactive_signal(
-                    ($to_prop(p)).into(),
-                    Signal::derive(move || v.get().map(CssValue::from)),
-                )
-            }
-        }
-    };
-}
-
-impl_style_entry_reactive!(&'static str, std::convert::identity);
-impl_style_entry_reactive!(String, std::convert::identity);
-
-// Style + Signal impls gated on non-nightly due to potential overlap with closure impl.
-#[cfg(not(feature = "nightly"))]
-impl From<(Style, Signal<Option<StyleValue>>)> for StyleEntry {
-    fn from((p, v): (Style, Signal<Option<StyleValue>>)) -> Self {
-        StyleEntry::reactive(p.as_str(), v)
-    }
-}
-
-#[cfg(not(feature = "nightly"))]
-impl From<(Style, Signal<Option<String>>)> for StyleEntry {
-    fn from((p, v): (Style, Signal<Option<String>>)) -> Self {
-        StyleEntry::reactive_signal(
-            Cow::Borrowed(p.as_str()),
-            Signal::derive(move || v.get().map(CssValue::from)),
-        )
-    }
-}
-
-impl From<(&'static str, ReadSignal<Option<StyleValue>>)> for StyleEntry {
-    fn from((property, value): (&'static str, ReadSignal<Option<StyleValue>>)) -> Self {
-        let value: Signal<Option<StyleValue>> = value.into();
-        StyleEntry::reactive(property, value)
-    }
-}
-
-impl From<(&'static str, ReadSignal<Option<String>>)> for StyleEntry {
-    fn from((property, value): (&'static str, ReadSignal<Option<String>>)) -> Self {
-        let value: Signal<Option<StyleValue>> = Signal::derive(move || value.get().map(Into::into));
-        StyleEntry::reactive(property, value)
-    }
-}
-
-macro_rules! impl_style_entry_optional {
-    ($val:ty) => {
-        impl<P: IntoStyleProperty> From<(P, Option<$val>)> for StyleEntry {
-            fn from((p, v): (P, Option<$val>)) -> Self {
-                StyleEntry::static_optional(p.into_property(), v.map(CssValue::from))
-            }
-        }
-    };
-}
-
-impl_style_entry_optional!(&'static str);
-impl_style_entry_optional!(String);
-
-impl<F, V> From<(Style, F)> for StyleEntry
+impl<V> IntoOptionalUncheckedStyleValue<V> for Option<V>
 where
-    V: Into<StyleValue>,
+    V: Into<UncheckedStyleValue>,
+{
+    fn into_optional_unchecked_entry(self, property: UncheckedPropertyName) -> StyleEntry {
+        StyleEntry::static_optional(
+            self.map(|value| StyleDeclaration::unchecked(property, value.into())),
+        )
+    }
+}
+
+// Leptos' nightly feature makes Signal implement Fn, which overlaps the closure
+// implementation below. On nightly, callers can pass `move || signal.get()`.
+#[cfg(not(feature = "nightly"))]
+impl<V> IntoOptionalUncheckedStyleValue<V> for Signal<Option<V>>
+where
+    V: Clone + Send + Sync + 'static + Into<UncheckedStyleValue>,
+{
+    fn into_optional_unchecked_entry(self, property: UncheckedPropertyName) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            self.get()
+                .map(|value| StyleDeclaration::unchecked(property.clone(), value.into()))
+        }))
+    }
+}
+
+#[cfg(not(feature = "nightly"))]
+impl<V> IntoOptionalUncheckedStyleValue<V> for ReadSignal<Option<V>>
+where
+    V: Clone + Send + Sync + 'static + Into<UncheckedStyleValue>,
+{
+    fn into_optional_unchecked_entry(self, property: UncheckedPropertyName) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            self.get()
+                .map(|value| StyleDeclaration::unchecked(property.clone(), value.into()))
+        }))
+    }
+}
+
+impl<F, V> IntoOptionalUncheckedStyleValue<V> for F
+where
+    V: Into<UncheckedStyleValue>,
     F: Fn() -> Option<V> + Send + Sync + 'static,
 {
-    fn from((property, value_fn): (Style, F)) -> Self {
-        StyleEntry::reactive_signal(
-            Cow::Borrowed(property.as_str()),
-            Signal::derive(move || value_fn().map(Into::into)),
-        )
+    fn into_optional_unchecked_entry(self, property: UncheckedPropertyName) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            self().map(|value| StyleDeclaration::unchecked(property.clone(), value.into()))
+        }))
     }
 }
 
-macro_rules! impl_style_entry_value_always {
-    ($val:ty) => {
-        impl IntoStyleEntryValue for $val {
-            fn into_style_entry(self, property: StyleProperty) -> StyleEntry {
-                StyleEntry::always(property, self)
-            }
-        }
-    };
+/// Conversion from an optional complete declaration source into a [`StyleEntry`].
+///
+/// The declaration can be a parsed [`StyleEntry`] or, with `typed-css`, a
+/// `leptos_css::CheckedDeclaration`. Because the source yields the complete declaration,
+/// a reactive source may safely change its property as well as its value.
+pub trait IntoOptionalStyleDeclaration<D> {
+    /// Convert this optional declaration source into a style entry.
+    fn into_optional_declaration_entry(self) -> StyleEntry;
 }
 
-impl_style_entry_value_always!(&'static str);
-impl_style_entry_value_always!(String);
-impl_style_entry_value_always!(CssValue);
-impl_style_entry_value_always!(CssDimension);
-impl_style_entry_value_always!(CssDimensionExpr);
-
-impl<F, V> IntoStyleEntryValue for F
+impl<D> IntoOptionalStyleDeclaration<D> for Option<D>
 where
-    V: Into<StyleValue>,
+    D: Into<StyleEntry>,
+{
+    fn into_optional_declaration_entry(self) -> StyleEntry {
+        match self {
+            Some(declaration) => declaration.into(),
+            None => StyleEntry::static_optional(None),
+        }
+    }
+}
+
+#[cfg(not(feature = "nightly"))]
+impl<D> IntoOptionalStyleDeclaration<D> for Signal<Option<D>>
+where
+    D: Clone + Send + Sync + 'static + Into<StyleEntry>,
+{
+    fn into_optional_declaration_entry(self) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            self.get()
+                .and_then(|declaration| declaration.into().resolve().map(Cow::into_owned))
+        }))
+    }
+}
+
+#[cfg(not(feature = "nightly"))]
+impl<D> IntoOptionalStyleDeclaration<D> for ReadSignal<Option<D>>
+where
+    D: Clone + Send + Sync + 'static + Into<StyleEntry>,
+{
+    fn into_optional_declaration_entry(self) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            self.get()
+                .and_then(|declaration| declaration.into().resolve().map(Cow::into_owned))
+        }))
+    }
+}
+
+impl<F, D> IntoOptionalStyleDeclaration<D> for F
+where
+    D: Into<StyleEntry>,
+    F: Fn() -> Option<D> + Send + Sync + 'static,
+{
+    fn into_optional_declaration_entry(self) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            self().and_then(|declaration| declaration.into().resolve().map(Cow::into_owned))
+        }))
+    }
+}
+
+use std::borrow::Cow;
+
+/// Conversion from an optional value source for one checked property.
+///
+/// This trait is available only with `typed-css` and powers the property-first
+/// `with_optional` and `add_optional` methods.
+#[cfg(feature = "typed-css")]
+pub trait IntoOptionalPropertyValue<P, V>
+where
+    P: leptos_css::property::CheckedProperty,
+{
+    /// Build an optional checked declaration without separating its property and value.
+    fn into_optional_property_entry(self, property: P) -> StyleEntry;
+}
+
+/// Conversion from an always-present reactive value source for one checked property.
+///
+/// This trait is available only with `typed-css` and powers the property-first
+/// [`Styles::add_reactive`] and [`crate::StylesBuilder::with_reactive`] methods.
+#[cfg(feature = "typed-css")]
+pub trait IntoReactivePropertyValue<P, V>
+where
+    P: leptos_css::property::CheckedProperty,
+{
+    /// Build a reactive checked declaration without separating its property and value.
+    fn into_reactive_property_entry(self, property: P) -> StyleEntry;
+}
+
+// Leptos' nightly feature makes Signal implement Fn, which overlaps the closure
+// implementation below. On nightly, callers can pass `move || signal.get()`.
+#[cfg(all(feature = "typed-css", not(feature = "nightly")))]
+impl<P, V> IntoReactivePropertyValue<P, V> for Signal<V>
+where
+    P: leptos_css::property::CheckedProperty,
+    V: Clone + Send + Sync + 'static + Into<leptos_css::DeclarationValue<P::Value>>,
+{
+    fn into_reactive_property_entry(self, property: P) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            Some(StyleDeclaration::Checked(property.declare(self.get())))
+        }))
+    }
+}
+
+#[cfg(all(feature = "typed-css", not(feature = "nightly")))]
+impl<P, V> IntoReactivePropertyValue<P, V> for ReadSignal<V>
+where
+    P: leptos_css::property::CheckedProperty,
+    V: Clone + Send + Sync + 'static + Into<leptos_css::DeclarationValue<P::Value>>,
+{
+    fn into_reactive_property_entry(self, property: P) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            Some(StyleDeclaration::Checked(property.declare(self.get())))
+        }))
+    }
+}
+
+#[cfg(feature = "typed-css")]
+impl<P, F, V> IntoReactivePropertyValue<P, V> for F
+where
+    P: leptos_css::property::CheckedProperty,
+    V: Into<leptos_css::DeclarationValue<P::Value>>,
     F: Fn() -> V + Send + Sync + 'static,
 {
-    fn into_style_entry(self, property: StyleProperty) -> StyleEntry {
-        StyleEntry::reactive_signal(property, Signal::derive(move || Some(self().into())))
+    fn into_reactive_property_entry(self, property: P) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            Some(StyleDeclaration::Checked(property.declare(self())))
+        }))
     }
 }
 
-impl<V: Into<StyleValue>> IntoOptionalStyleEntryValue for Option<V> {
-    fn into_style_entry(self, property: StyleProperty) -> StyleEntry {
-        StyleEntry::static_optional(property, self.map(Into::into))
-    }
-}
-
-// Signal impls gated on non-nightly due to Signal<T>: Fn() -> T on nightly,
-// which would overlap with the closure impl below.
-#[cfg(not(feature = "nightly"))]
-impl IntoOptionalStyleEntryValue for Signal<Option<StyleValue>> {
-    fn into_style_entry(self, property: StyleProperty) -> StyleEntry {
-        StyleEntry::reactive(property, self)
-    }
-}
-
-#[cfg(not(feature = "nightly"))]
-impl IntoOptionalStyleEntryValue for Signal<Option<String>> {
-    fn into_style_entry(self, property: StyleProperty) -> StyleEntry {
-        StyleEntry::reactive_signal(
-            property,
-            Signal::derive(move || self.get().map(CssValue::from)),
+#[cfg(feature = "typed-css")]
+impl<P, V> IntoOptionalPropertyValue<P, V> for Option<V>
+where
+    P: leptos_css::property::CheckedProperty,
+    V: Into<leptos_css::DeclarationValue<P::Value>>,
+{
+    fn into_optional_property_entry(self, property: P) -> StyleEntry {
+        StyleEntry::static_optional(
+            self.map(|value| StyleDeclaration::Checked(property.declare(value))),
         )
     }
 }
 
-impl IntoOptionalStyleEntryValue for ReadSignal<Option<StyleValue>> {
-    fn into_style_entry(self, property: StyleProperty) -> StyleEntry {
-        let value: Signal<Option<StyleValue>> = self.into();
-        StyleEntry::reactive(property, value)
-    }
-}
-
-impl IntoOptionalStyleEntryValue for ReadSignal<Option<String>> {
-    fn into_style_entry(self, property: StyleProperty) -> StyleEntry {
-        let value: Signal<Option<StyleValue>> = Signal::derive(move || self.get().map(Into::into));
-        StyleEntry::reactive(property, value)
-    }
-}
-
-impl<F, V> IntoOptionalStyleEntryValue for F
+#[cfg(all(feature = "typed-css", not(feature = "nightly")))]
+impl<P, V> IntoOptionalPropertyValue<P, V> for Signal<Option<V>>
 where
-    V: Into<StyleValue>,
+    P: leptos_css::property::CheckedProperty,
+    V: Clone + Send + Sync + 'static + Into<leptos_css::DeclarationValue<P::Value>>,
+{
+    fn into_optional_property_entry(self, property: P) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            self.get()
+                .map(|value| StyleDeclaration::Checked(property.declare(value)))
+        }))
+    }
+}
+
+#[cfg(all(feature = "typed-css", not(feature = "nightly")))]
+impl<P, V> IntoOptionalPropertyValue<P, V> for ReadSignal<Option<V>>
+where
+    P: leptos_css::property::CheckedProperty,
+    V: Clone + Send + Sync + 'static + Into<leptos_css::DeclarationValue<P::Value>>,
+{
+    fn into_optional_property_entry(self, property: P) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            self.get()
+                .map(|value| StyleDeclaration::Checked(property.declare(value)))
+        }))
+    }
+}
+
+#[cfg(feature = "typed-css")]
+impl<P, F, V> IntoOptionalPropertyValue<P, V> for F
+where
+    P: leptos_css::property::CheckedProperty,
+    V: Into<leptos_css::DeclarationValue<P::Value>>,
     F: Fn() -> Option<V> + Send + Sync + 'static,
 {
-    fn into_style_entry(self, property: StyleProperty) -> StyleEntry {
-        StyleEntry::reactive_signal(property, Signal::derive(move || self().map(Into::into)))
+    fn into_optional_property_entry(self, property: P) -> StyleEntry {
+        StyleEntry::reactive_signal(Signal::derive(move || {
+            self().map(|value| StyleDeclaration::Checked(property.declare(value)))
+        }))
     }
 }
 
-impl<T: Into<StyleEntry>> From<T> for Styles {
+impl<T> From<T> for Styles
+where
+    T: Into<StyleEntry>,
+{
     fn from(entry: T) -> Self {
-        Styles::builder().with_entry(entry).build()
+        Styles::builder().with_declaration(entry).build()
     }
 }
 
-impl<T: Into<StyleEntry>, const N: usize> From<[T; N]> for Styles {
+impl<T, const N: usize> From<[T; N]> for Styles
+where
+    T: Into<StyleEntry>,
+{
     fn from(entries: [T; N]) -> Self {
-        Styles::builder().with_all(entries.into_iter()).build()
+        Styles::builder().with_declarations(entries).build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assertr::prelude::*;
+
+    use crate::{StyleEntry, Styles};
+
+    #[test]
+    fn parsed_entry_converts_to_styles() {
+        let styles: Styles = StyleEntry::parse("color: red").unwrap().into();
+        assert_that!(styles.to_style_string()).is_equal_to("color:red;".to_string());
+    }
+
+    #[test]
+    fn array_of_explicit_unchecked_entries_renders_in_order() {
+        let styles: Styles = [
+            StyleEntry::always_unchecked("color", "blue"),
+            StyleEntry::always_unchecked("padding", "20px"),
+        ]
+        .into();
+        assert_that!(styles.to_style_string()).is_equal_to("color:blue;padding:20px;".to_string());
+    }
+
+    #[cfg(feature = "typed-css")]
+    #[test]
+    fn checked_declaration_converts_without_losing_pairing() {
+        use leptos_css::{CssColor, CssColorName, property::BackgroundColorProperty};
+
+        let styles: Styles = BackgroundColorProperty
+            .declare(CssColor::Named(CssColorName::Red))
+            .into();
+        assert_that!(styles.to_style_string()).is_equal_to("background-color:red;".to_string());
     }
 }

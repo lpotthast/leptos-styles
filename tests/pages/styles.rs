@@ -1,4 +1,5 @@
-use thirtyfour::WebDriver;
+use browser_test::thirtyfour::WebDriver;
+use leptos_browser_test::Report;
 
 use crate::pages::BaseActions;
 
@@ -18,11 +19,11 @@ impl BaseActions for StylesPage<'_> {
 }
 
 impl StylesPage<'_> {
-    pub async fn goto(&self) -> anyhow::Result<()> {
+    pub async fn goto(&self) -> Result<(), Report> {
         self.goto_path("/").await
     }
 
-    pub async fn click(&self, id: &str) -> anyhow::Result<()> {
+    pub async fn click(&self, id: &str) -> Result<(), Report> {
         self.click_element_with_id(id).await
     }
 }

@@ -7,37 +7,62 @@ authors = ["Lukas Potthast <privat@lukas-potthast.de>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/lpotthast/leptos-styles"
-description = "Prop-drillable, reactive CSS style container for Leptos with typed CSS values"
-categories = ["gui", "web-programming"]
-keywords = ["leptos", "css", "styles", "web"]
+homepage = "https://github.com/lpotthast/leptos-styles"
+documentation = "https://docs.rs/leptos-styles"
+description = "Prop-drillable, reactive CSS style container for Leptos"
+categories = ["web-programming", "gui", "wasm"]
+keywords = ["leptos", "css", "style", "reactive", "props"]
+exclude = [
+    "/.codegraph/**",
+    "/.cargo/**",
+    "/.github/**",
+    "/.idea/**",
+    "/AGENTS.md",
+    "/Justfile",
+    "/testing/**",
+    "/tests/**",
+]
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
 [features]
-default = []
-nightly = ["leptos/nightly"]
+default = ["typed-css"]
+# Enables Leptos' nightly closure impls. Note that turning this on disables the
+# `Signal<...>` and `ReadSignal<...>` `From` impls in `convert.rs`, because the
+# nightly build provides blanket `Fn() -> _` impls on `Signal` that would
+# otherwise overlap with the closure-based conversions.
+nightly = ["leptos/nightly", "leptos-css?/nightly"]
+# Enables the checked declaration boundary, property selectors, and typed CSS grammars from
+# `leptos-css`. This is enabled by default. With default features disabled, only the explicit
+# unchecked string APIs and parsing escape hatches remain, and `leptos-css` is not in the
+# dependency tree.
+typed-css = ["dep:leptos-css"]
 
 [dependencies]
-leptos = "0.8.17"
+leptos = { version = "0.8.19", default-features = false }
+leptos-css = { version = "0.1.0", path = "../leptos-css", optional = true }
 reactive_graph = "0.2.13"
 smallvec = "1"
 tracing = "0.1.44"
 
 [dev-dependencies]
-assertr = { version = "0.5.0", default-features = false, features = ["std"] }
-leptos = { version = "0.8.17", features = ["csr", "hydrate"] }
+assertr = { version = "0.6.0", default-features = false, features = ["std"] }
+leptos = { version = "0.8.19", features = ["csr", "hydrate"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-anyhow = { version = "1.0.102", default-features = false, features = ["std"] }
-async-trait = { version = "0.1.89", default-features = false, features = [] }
-chrome-for-testing-manager = { version = "0.7.1", default-features = false, features = ["thirtyfour"] }
-thirtyfour = { version = "0.36.1", default-features = false, features = ["component", "reqwest", "rustls-tls"] }
-tokio = { version = "1.50.0", default-features = false, features = ["macros", "rt", "rt-multi-thread", "time"] }
-tokio-process-tools = { version = "0.8.0", default-features = false, features = [] }
+browser-test = "0.4.0"
+leptos-browser-test = "0.3.0"
+tokio = { version = "1.52.3", default-features = false, features = ["macros", "rt", "rt-multi-thread", "time"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["ansi", "fmt", "registry"] }
 
+[[test]]
+name = "typed_css"
+path = "tests/typed_css.rs"
+required-features = ["typed-css"]
+
 [lints.rust]
+missing_docs = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(web_sys_unstable_apis)'] }
 
 [lints.clippy]

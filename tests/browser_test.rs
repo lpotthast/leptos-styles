@@ -1,89 +1,56 @@
+//! Browser integration tests for the Leptos style attribute lifecycle.
 #![cfg(not(target_arch = "wasm32"))]
 
 mod pages;
-mod test_app;
 mod ui_tests;
 
-use std::sync::Once;
+use std::time::Duration;
 
-use anyhow::Result;
-use chrome_for_testing_manager::{
-    Channel, Chromedriver, PortRequest, Session, SessionError, VersionRequest,
+use browser_test::thirtyfour::ChromiumLikeCapabilities;
+use browser_test::{
+    BrowserTestFailurePolicy, BrowserTestParallelism, BrowserTestRunner, BrowserTestVisibility,
+    BrowserTests, BrowserTimeouts, PauseConfig,
 };
-use thirtyfour::{ChromeCapabilities, ChromiumLikeCapabilities};
-use ui_tests::UiTest;
-
-const DELAY_TEST_EXECUTION: bool = false;
-static INIT_TRACING: Once = Once::new();
-
-fn init_tracing() {
-    INIT_TRACING.call_once(|| {
-        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    });
-}
+use leptos_browser_test::{LeptosTestAppConfig, Report};
 
 #[tokio::test(flavor = "multi_thread")]
-async fn browser_tests() -> Result<()> {
-    init_tracing();
+async fn browser_tests() -> Result<(), Report> {
+    tracing_subscriber::fmt().init();
 
-    let frontend = test_app::start_frontend().await?;
-    let base_url = frontend.base_url.clone();
+    let app = LeptosTestAppConfig::new("testing/test-app")
+        .with_app_name("leptos-styles test app")
+        .start()
+        .await?;
 
-    if DELAY_TEST_EXECUTION {
-        tracing::info!("Continue with tests? y/n");
-        let mut buf = String::new();
-        loop {
-            buf.clear();
-            let input = std::io::stdin().read_line(&mut buf);
-            if input.is_ok() {
-                match buf.trim() {
-                    "y" => break,
-                    "n" => return Ok(()),
-                    _ => {}
-                }
-            }
-            if let Err(err) = input {
-                tracing::error!("Error reading input: {err:?}");
-                return Err(err.into());
-            }
-        }
-    }
+    BrowserTestRunner::new()
+        .with_chrome_capabilities(|caps| {
+            // `--no-sandbox` disables Chrome's child-process sandboxing. User-mode tarball
+            // extraction can't set the setuid-root bit on `chrome_sandbox` (the privileged helper
+            // Chrome execs to install the sandbox), and CI kernels often also restrict
+            // unprivileged user namespaces. Without either layer, Chrome exits before chromedriver
+            // opens a session.
+            caps.add_arg("--no-sandbox")?;
 
-    let tests: Vec<Box<dyn UiTest>> = vec![Box::new(ui_tests::test_styles::StylesTests {})];
+            // `--disable-dev-shm-usage` makes Chrome place its IPC shared-memory segments under
+            // `/tmp` instead of `/dev/shm`. CI runners typically expose `/dev/shm` tiny tmpfs,
+            // which Chrome can exhaust during session startup.
+            caps.add_arg("--disable-dev-shm-usage")?;
+            Ok(())
+        })
+        .with_test_parallelism(BrowserTestParallelism::Sequential)
+        .with_failure_policy(BrowserTestFailurePolicy::RunAll)
+        .with_visibility(BrowserTestVisibility::from_env())
+        .with_pause(PauseConfig::from_env())
+        .with_timeouts(
+            BrowserTimeouts::builder()
+                .implicit_wait_timeout(Duration::from_secs(3))
+                .build(),
+        )
+        .run(
+            app.base_url(),
+            BrowserTests::new().with(ui_tests::test_styles::StylesTests {}),
+        )
+        .await?;
 
-    tracing::info!("Starting webdriver...");
-    let chromedriver =
-        Chromedriver::run(VersionRequest::LatestIn(Channel::Stable), PortRequest::Any).await?;
-
-    #[allow(clippy::redundant_closure_for_method_calls)]
-    let test_result = async {
-        for test in tests {
-            chromedriver
-                .with_custom_session(
-                    |caps: &mut ChromeCapabilities| {
-                        if std::env::var("BROWSER_TEST_VISIBLE").is_ok() {
-                            caps.unset_headless()?;
-                        }
-                        Ok(())
-                    },
-                    async |session: &Session| {
-                        tracing::info!("Executing test: {}", test.name());
-                        test.run(session, &base_url)
-                            .await
-                            .map_err(|err| SessionError::Panic {
-                                reason: err.to_string(),
-                            })?;
-
-                        Ok(())
-                    },
-                )
-                .await?;
-        }
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-
-    chromedriver.terminate().await?;
-    drop(frontend);
-    test_result
+    Ok(())
 }

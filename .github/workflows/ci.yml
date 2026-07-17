@@ -1,0 +1,189 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        no_default: [false, true]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --locked ${{ matrix.no_default && '--no-default-features' || '' }}
+
+  check-nightly:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        feature_args:
+          - --all-features
+          - --no-default-features --features nightly
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --locked ${{ matrix.feature_args }}
+
+  check-wasm:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        no_default: [false, true]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --target wasm32-unknown-unknown --locked ${{ matrix.no_default && '--no-default-features' || '' }}
+
+  clippy:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        no_default: [false, true]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --locked ${{ matrix.no_default && '--no-default-features' || '' }} -- -D warnings
+
+  test-unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        no_default: [false, true]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --lib --locked ${{ matrix.no_default && '--no-default-features' || '' }}
+      - run: cargo test --doc --locked ${{ matrix.no_default && '--no-default-features' || '' }}
+
+  test-typed-css-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --test typed_css --locked
+
+  duplicate-leptos-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify a single Leptos version is resolved
+        run: cargo tree --features typed-css -i leptos
+
+  browser-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            testing/test-app
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-leptos,wasm-bindgen-cli@0.2.125
+      - uses: browser-actions/setup-chrome@v1
+        with:
+          install-chromedriver: true
+      - run: cargo test --test browser_test --locked -- --nocapture
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        no_default: [false, true]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked ${{ matrix.no_default && '--no-default-features' || '' }}
+
+  doc:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        no_default: [false, true]
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --release --locked ${{ matrix.no_default && '--no-default-features' || '' }}
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --locked
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+
+  semver-checks:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - run: cargo semver-checks
