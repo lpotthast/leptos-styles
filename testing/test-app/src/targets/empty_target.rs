@@ -11,7 +11,7 @@ use leptos_styles::Styles;
 pub fn EmptyTarget() -> impl IntoView {
     let (color, set_color) = signal(Some("ephemeral".to_string()));
 
-    let styles = Styles::new().add_optional_unchecked("color", color);
+    let styles = Styles::new().add_optional_unchecked("color", move || color.get());
 
     view! {
         <section>

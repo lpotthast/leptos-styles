@@ -28,10 +28,9 @@ targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
 [features]
 default = ["typed-css"]
-# Enables Leptos' nightly closure impls. Note that turning this on disables the
-# `Signal<...>` and `ReadSignal<...>` `From` impls in `convert.rs`, because the
-# nightly build provides blanket `Fn() -> _` impls on `Signal` that would
-# otherwise overlap with the closure-based conversions.
+# Enables Leptos' nightly closure impls. Reactive style sources use explicit
+# `move || ...` closures on every toolchain, so dependency feature unification
+# cannot introduce overlapping direct-signal conversions.
 nightly = ["leptos/nightly", "leptos-css?/nightly"]
 # Enables the checked declaration boundary, property selectors, and typed CSS grammars from
 # `leptos-css`. This is enabled by default. With default features disabled, only the explicit

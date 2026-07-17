@@ -13,12 +13,14 @@ use leptos_styles::{
 pub fn CalcTarget() -> impl IntoView {
     let styles = Styles::builder()
         .with(
-            WidthProperty,
-            Size::Calculation(LengthPercentageCalculation::new(pct(100) - px(20))),
+            WidthProperty.declare(Size::Calculation(LengthPercentageCalculation::new(
+                pct(100) - px(20),
+            ))),
         )
         .with(
-            HeightProperty,
-            Size::Calculation(LengthPercentageCalculation::new(vh(50) + rem(1))),
+            HeightProperty.declare(Size::Calculation(LengthPercentageCalculation::new(
+                vh(50) + rem(1),
+            ))),
         )
         .build();
 

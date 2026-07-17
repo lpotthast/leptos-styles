@@ -12,7 +12,7 @@ pub fn ReactiveTarget() -> impl IntoView {
 
     let styles = Styles::builder()
         .with_unchecked("display", "grid")
-        .with_optional_unchecked("color", color)
+        .with_optional_unchecked("color", move || color.get())
         .build();
 
     view! {

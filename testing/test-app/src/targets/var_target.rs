@@ -17,15 +17,12 @@ css_custom_property!(ACCENT_COLOR: CssColor = "--AccentColor");
 pub fn VarTarget() -> impl IntoView {
     let missing_color = CssCustomProperty::<CssColor>::new("--MissingColor");
     let styles = Styles::builder()
-        .with(ACCENT_COLOR, CssColor::Named(CssColorName::Fuchsia))
-        .with(
-            ColorProperty,
-            var(&ACCENT_COLOR, CssColor::Named(CssColorName::Black)),
-        )
-        .with(
-            BackgroundColorProperty,
-            var(&missing_color, CssColor::Named(CssColorName::CurrentColor)),
-        )
+        .with(ACCENT_COLOR.declare(CssColor::Named(CssColorName::Fuchsia)))
+        .with(ColorProperty.declare(var(&ACCENT_COLOR, CssColor::Named(CssColorName::Black))))
+        .with(BackgroundColorProperty.declare(var(
+            &missing_color,
+            CssColor::Named(CssColorName::CurrentColor),
+        )))
         .build();
 
     view! {

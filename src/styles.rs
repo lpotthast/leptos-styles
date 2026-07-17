@@ -5,12 +5,10 @@ use smallvec::SmallVec;
 use crate::{
     IntoOptionalStyleDeclaration, IntoOptionalUncheckedStyleValue, IntoUncheckedPropertyName,
     ParseStyleEntryError, StyleEntry, UncheckedStyleValue,
+    convert::reactive_declaration,
     style_entry::StyleDeclaration,
     style_list::{StyleList, StylePriority},
 };
-
-#[cfg(feature = "typed-css")]
-use crate::{IntoOptionalPropertyValue, IntoReactivePropertyValue};
 
 /// Leptos component-prop-utility to drill down a list of inline styles.
 ///
@@ -57,15 +55,15 @@ use crate::{IntoOptionalPropertyValue, IntoReactivePropertyValue};
 ///         <ExtendingStyles styles=Styles::new().add_unchecked("color", "red")/>
 ///         <ExtendingStyles styles=Styles::builder()
 ///             .with_unchecked("padding", "10px")
-///             .with_optional_unchecked("color", color)
+///             .with_optional_unchecked("color", move || color.get())
 ///             .build()
 ///         />
 ///     }
 /// }
 /// ```
 ///
-/// With the `typed-css` cargo feature enabled, the same component pattern accepts checked
-/// property selectors and their exact value grammars:
+/// With the `typed-css` cargo feature enabled, the same component pattern accepts complete
+/// checked declarations:
 ///
 /// ```rust
 /// # #[cfg(feature = "typed-css")]
@@ -74,7 +72,7 @@ use crate::{IntoOptionalPropertyValue, IntoReactivePropertyValue};
 /// use leptos_styles::{Styles, css::{Padding, px}, property::PaddingProperty};
 ///
 /// let styles = Styles::builder()
-///     .with(PaddingProperty, Padding::all(px(10)))
+///     .with(PaddingProperty.declare(Padding::all(px(10))))
 ///     .build();
 /// assert_eq!(styles.to_style_string(), "padding:10px;");
 /// # }
@@ -91,61 +89,31 @@ pub struct StylesBuilder {
 }
 
 impl StylesBuilder {
-    /// Add one grammar-checked property/value pair to the builder.
-    #[cfg(feature = "typed-css")]
+    /// Add one complete pre-built declaration to the builder.
     #[must_use]
-    pub fn with<P, V>(mut self, property: P, value: V) -> Self
-    where
-        P: leptos_css::property::CheckedProperty,
-        V: Into<leptos_css::DeclarationValue<P::Value>>,
-    {
-        self.styles.push(property.declare(value).into());
+    pub fn with(mut self, declaration: impl Into<StyleEntry>) -> Self {
+        self.styles.push(declaration.into());
         self
     }
 
-    /// Add a CSS-wide keyword for an ordinary checked property.
-    #[cfg(feature = "typed-css")]
+    /// Add a conditionally-present complete declaration to the builder.
     #[must_use]
-    pub fn with_global<P>(mut self, property: P, value: leptos_css::GlobalKeyword) -> Self
-    where
-        P: leptos_css::property::CssWideProperty,
-    {
-        self.styles.push(property.declare_global(value).into());
-        self
-    }
-
-    /// Add a conditionally-present value for one checked property.
-    #[cfg(feature = "typed-css")]
-    #[must_use]
-    pub fn with_optional<P, V>(
-        mut self,
-        property: P,
-        value: impl IntoOptionalPropertyValue<P, V>,
-    ) -> Self
-    where
-        P: leptos_css::property::CheckedProperty,
-    {
+    pub fn with_optional<D>(mut self, declaration: impl IntoOptionalStyleDeclaration<D>) -> Self {
         self.styles
-            .push(value.into_optional_property_entry(property));
+            .push(declaration.into_optional_declaration_entry());
         self
     }
 
-    /// Add an always-present reactive value for one checked property.
+    /// Add an always-present reactive complete declaration to the builder.
     ///
-    /// Accepts a Leptos `Signal<V>` or `ReadSignal<V>` on stable Rust, or a `Fn() -> V` closure on
-    /// stable and nightly. Use [`Self::with_optional`] when the declaration can be absent.
-    #[cfg(feature = "typed-css")]
+    /// The closure form is portable across stable and nightly Rust. Use [`Self::with_optional`]
+    /// when the declaration can be absent.
     #[must_use]
-    pub fn with_reactive<P, V>(
-        mut self,
-        property: P,
-        value: impl IntoReactivePropertyValue<P, V>,
-    ) -> Self
+    pub fn with_reactive<D>(mut self, declaration: impl Fn() -> D + Send + Sync + 'static) -> Self
     where
-        P: leptos_css::property::CheckedProperty,
+        D: Into<StyleEntry>,
     {
-        self.styles
-            .push(value.into_reactive_property_entry(property));
+        self.styles.push(reactive_declaration(declaration));
         self
     }
 
@@ -170,24 +138,6 @@ impl StylesBuilder {
     ) -> Self {
         self.styles
             .push(value.into_optional_unchecked_entry(property.into_unchecked_property_name()));
-        self
-    }
-
-    /// Add one complete pre-built declaration to the builder.
-    #[must_use]
-    pub fn with_declaration(mut self, declaration: impl Into<StyleEntry>) -> Self {
-        self.styles.push(declaration.into());
-        self
-    }
-
-    /// Add one conditionally-present complete declaration to the builder.
-    #[must_use]
-    pub fn with_optional_declaration<D>(
-        mut self,
-        declaration: impl IntoOptionalStyleDeclaration<D>,
-    ) -> Self {
-        self.styles
-            .push(declaration.into_optional_declaration_entry());
         self
     }
 
@@ -227,61 +177,32 @@ impl Styles {
         StylesBuilder::default()
     }
 
-    /// Add one grammar-checked property/value pair to this style-list.
-    #[cfg(feature = "typed-css")]
+    /// Add one complete pre-built declaration to this style-list.
     #[must_use]
-    pub fn add<P, V>(mut self, property: P, value: V) -> Self
-    where
-        P: leptos_css::property::CheckedProperty,
-        V: Into<leptos_css::DeclarationValue<P::Value>>,
-    {
-        self.styles.push(property.declare(value).into());
+    #[allow(clippy::should_implement_trait)]
+    pub fn add(mut self, declaration: impl Into<StyleEntry>) -> Self {
+        self.styles.push(declaration.into());
         self
     }
 
-    /// Add a CSS-wide keyword for an ordinary checked property.
-    #[cfg(feature = "typed-css")]
+    /// Add one conditionally-present complete declaration to this style-list.
     #[must_use]
-    pub fn add_global<P>(mut self, property: P, value: leptos_css::GlobalKeyword) -> Self
-    where
-        P: leptos_css::property::CssWideProperty,
-    {
-        self.styles.push(property.declare_global(value).into());
-        self
-    }
-
-    /// Add a conditionally-present value for one checked property.
-    #[cfg(feature = "typed-css")]
-    #[must_use]
-    pub fn add_optional<P, V>(
-        mut self,
-        property: P,
-        value: impl IntoOptionalPropertyValue<P, V>,
-    ) -> Self
-    where
-        P: leptos_css::property::CheckedProperty,
-    {
+    pub fn add_optional<D>(mut self, declaration: impl IntoOptionalStyleDeclaration<D>) -> Self {
         self.styles
-            .push(value.into_optional_property_entry(property));
+            .push(declaration.into_optional_declaration_entry());
         self
     }
 
-    /// Add an always-present reactive value for one checked property.
+    /// Add an always-present reactive complete declaration to this style-list.
     ///
-    /// Accepts a Leptos `Signal<V>` or `ReadSignal<V>` on stable Rust, or a `Fn() -> V` closure on
-    /// stable and nightly. Use [`Self::add_optional`] when the declaration can be absent.
-    #[cfg(feature = "typed-css")]
+    /// The closure form is portable across stable and nightly Rust. Use [`Self::add_optional`]
+    /// when the declaration can be absent.
     #[must_use]
-    pub fn add_reactive<P, V>(
-        mut self,
-        property: P,
-        value: impl IntoReactivePropertyValue<P, V>,
-    ) -> Self
+    pub fn add_reactive<D>(mut self, declaration: impl Fn() -> D + Send + Sync + 'static) -> Self
     where
-        P: leptos_css::property::CheckedProperty,
+        D: Into<StyleEntry>,
     {
-        self.styles
-            .push(value.into_reactive_property_entry(property));
+        self.styles.push(reactive_declaration(declaration));
         self
     }
 
@@ -306,25 +227,6 @@ impl Styles {
     ) -> Self {
         self.styles
             .push(value.into_optional_unchecked_entry(property.into_unchecked_property_name()));
-        self
-    }
-
-    /// Add one complete pre-built declaration to this style-list.
-    #[must_use]
-    #[allow(clippy::should_implement_trait)]
-    pub fn add_declaration(mut self, declaration: impl Into<StyleEntry>) -> Self {
-        self.styles.push(declaration.into());
-        self
-    }
-
-    /// Add one conditionally-present complete declaration to this style-list.
-    #[must_use]
-    pub fn add_optional_declaration<D>(
-        mut self,
-        declaration: impl IntoOptionalStyleDeclaration<D>,
-    ) -> Self {
-        self.styles
-            .push(declaration.into_optional_declaration_entry());
         self
     }
 
@@ -846,15 +748,14 @@ mod tests {
             let missing_color = CssCustomProperty::<CssColor>::new("--MissingColor");
 
             let styles = Styles::builder()
-                .with(ACCENT_COLOR, CssColor::Named(CssColorName::Fuchsia))
+                .with(ACCENT_COLOR.declare(CssColor::Named(CssColorName::Fuchsia)))
                 .with(
-                    ColorProperty,
-                    var(&ACCENT_COLOR, CssColor::Named(CssColorName::Black)),
+                    ColorProperty.declare(var(&ACCENT_COLOR, CssColor::Named(CssColorName::Black))),
                 )
-                .with(
-                    BackgroundColorProperty,
-                    var(&missing_color, CssColor::Named(CssColorName::CurrentColor)),
-                )
+                .with(BackgroundColorProperty.declare(var(
+                    &missing_color,
+                    CssColor::Named(CssColorName::CurrentColor),
+                )))
                 .build();
 
             assert_that!(styles.to_style_string()).is_equal_to(
@@ -865,16 +766,15 @@ mod tests {
 
         #[test]
         fn checked_calculations_render_through_the_styles_pipeline() {
-            let styles = Styles::builder()
-                .with(
-                    WidthProperty,
-                    Size::Calculation(LengthPercentageCalculation::new(pct(100) - px(20))),
-                )
-                .with(
-                    HeightProperty,
-                    Size::Calculation(LengthPercentageCalculation::new(vh(50) + rem(1))),
-                )
-                .build();
+            let styles =
+                Styles::builder()
+                    .with(WidthProperty.declare(Size::Calculation(
+                        LengthPercentageCalculation::new(pct(100) - px(20)),
+                    )))
+                    .with(HeightProperty.declare(Size::Calculation(
+                        LengthPercentageCalculation::new(vh(50) + rem(1)),
+                    )))
+                    .build();
 
             assert_that!(styles.to_style_string())
                 .is_equal_to("width:calc(100% - 20px);height:calc(50vh + 1rem);".to_string());
@@ -883,20 +783,11 @@ mod tests {
         #[test]
         fn typed_units_render_through_the_styles_pipeline() {
             let styles = Styles::builder()
-                .with(
-                    WidthProperty,
-                    Size::from(NonNegativeLengthPercentage::new(pct(50))),
-                )
-                .with(
-                    HeightProperty,
-                    Size::from(NonNegativeLengthPercentage::new(vh(40))),
-                )
-                .with(PaddingProperty, Padding::all(em(1.5)))
-                .with(
-                    MarginProperty,
-                    Margin::All(LengthPercentageAuto::from(rem(2))),
-                )
-                .with(RightProperty, LengthPercentageAuto::from(vw(10)))
+                .with(WidthProperty.declare(Size::from(NonNegativeLengthPercentage::new(pct(50)))))
+                .with(HeightProperty.declare(Size::from(NonNegativeLengthPercentage::new(vh(40)))))
+                .with(PaddingProperty.declare(Padding::all(em(1.5))))
+                .with(MarginProperty.declare(Margin::All(LengthPercentageAuto::from(rem(2)))))
+                .with(RightProperty.declare(LengthPercentageAuto::from(vw(10))))
                 .build();
 
             assert_that!(styles.to_style_string()).is_equal_to(
@@ -908,8 +799,11 @@ mod tests {
         fn reactive_typed_value_renders_through_signal() {
             let styles = Styles::builder()
                 .with_unchecked("color", "red")
-                .with_optional(WidthProperty, move || {
-                    Some(Size::from(NonNegativeLengthPercentage::new(pct(50))))
+                .with_optional(move || {
+                    Some(
+                        WidthProperty
+                            .declare(Size::from(NonNegativeLengthPercentage::new(pct(50)))),
+                    )
                 })
                 .build();
             assert_that!(styles.is_reactive()).is_true();
@@ -924,14 +818,14 @@ mod tests {
             let resolutions_for_declaration = Arc::clone(&resolutions);
 
             let styles = Styles::builder()
-                .with_optional_declaration(move || {
+                .with_reactive(move || {
                     resolutions_for_declaration.fetch_add(1, Ordering::Relaxed);
                     let color = CssColor::Named(CssColorName::Red);
-                    Some(if use_background_for_declaration.load(Ordering::Relaxed) {
+                    if use_background_for_declaration.load(Ordering::Relaxed) {
                         BackgroundColorProperty.declare(color)
                     } else {
                         ColorProperty.declare(color)
-                    })
+                    }
                 })
                 .build();
 

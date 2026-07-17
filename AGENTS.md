@@ -3,9 +3,10 @@
 ## Product contract
 
 - `leptos-styles` is a prop-drillable, reactive owner of one complete inline `style` attribute.
-- The default feature set includes `typed-css`. Its normal authoring surface is property-first:
-  `with(PaddingProperty, Padding::all(px(16)))` and the matching `add` methods. Always-present
-  reactive values use `with_reactive` / `add_reactive`; optional sources use the optional variants.
+- The default feature set includes `typed-css`. Its normal authoring surface is declaration-first:
+  `with(PaddingProperty.declare(Padding::all(px(16))))` and the matching `add` methods.
+  Always-present reactive declarations use `with_reactive(move || ...)` / `add_reactive(move || ...)`;
+  optional sources use the optional variants.
 - Preserve the `leptos-css` checked boundary. Store `CheckedDeclaration` intact; never recover a
   property name and store it beside a generic value.
 - The same value grammar may serve several properties. The property selector says which
@@ -50,11 +51,11 @@ escape hatches rather than stopping at green tests.
 
 ## Feature model and compatibility
 
-- `typed-css` is enabled by default and pulls in `../leptos-css`. With default features disabled,
+- `typed-css` is enabled by default and pulls in `leptos-css`. With default features disabled,
   the checked builders and typed re-exports are absent and `leptos-css` must not enter the graph.
-- `nightly` forwards to Leptos and optional `leptos-css`. On nightly, Leptos makes `Signal<T>`
-  callable, so explicit `Signal` conversion impls are gated to avoid overlapping closure impls;
-  callers can use `move || signal.get()`.
+- `nightly` forwards to Leptos and optional `leptos-css`. Reactive sources use explicit
+  `move || signal.get()` closures on stable and nightly; do not add direct `Signal` conversion impls that can overlap
+  when Leptos features are unified downstream.
 - MSRV is Rust 1.89.0. Do not use newer standard-library APIs without updating `Cargo.toml`, the
   README, and CI together.
 - Keep `leptos = 0.8.19` in lockstep with `leptos-css`; duplicate Leptos versions are a CI failure.
@@ -70,8 +71,8 @@ escape hatches rather than stopping at green tests.
   metadata. It does not decide current property conflicts.
 - `styles.rs` owns the public builder/chaining API, merge grouping, and the single
   `write_style_string` serialization path.
-- `convert.rs` owns reactive and optional closure, `Signal`, and `ReadSignal` conversions for checked
-  values, complete declarations, and unchecked values. New source shapes belong there.
+- `convert.rs` owns reactive and optional closure conversions for complete declarations and
+  unchecked values. New source shapes belong there.
 - `into_style.rs` owns Leptos `IntoStyle`, attribute integration, and static/reactive render state.
 - `lib.rs` enumerates the intentionally small public surface and feature-gated re-exports.
 

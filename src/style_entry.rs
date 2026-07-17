@@ -230,7 +230,7 @@ impl StyleEntry {
     /// Create an entry from a reactive optional unchecked value.
     ///
     /// When the signal returns `None`, this entry is excluded from the output. Prefer the
-    /// checked property-first APIs when the `typed-css` feature is enabled.
+    /// checked declaration APIs when the `typed-css` feature is enabled.
     pub fn reactive_unchecked(
         property: impl IntoUncheckedPropertyName,
         value: impl Into<Signal<Option<UncheckedStyleValue>>>,
@@ -246,7 +246,7 @@ impl StyleEntry {
 
     /// Create an entry from an always-present unchecked property/value pair.
     ///
-    /// Prefer the checked property-first APIs when the `typed-css` feature is enabled.
+    /// Prefer the checked declaration APIs when the `typed-css` feature is enabled.
     pub fn always_unchecked(
         property: impl IntoUncheckedPropertyName,
         value: impl Into<UncheckedStyleValue>,
@@ -408,8 +408,7 @@ mod tests {
                 }
             }
 
-            let styles =
-                Styles::new().add_declaration(StyleEntry::always_unchecked(TouchAction, "none"));
+            let styles = Styles::new().add(StyleEntry::always_unchecked(TouchAction, "none"));
             assert_that!(styles.to_style_string()).is_equal_to("touch-action:none;".to_string());
         }
     }

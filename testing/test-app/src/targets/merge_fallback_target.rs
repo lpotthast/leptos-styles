@@ -12,7 +12,7 @@ pub fn MergeFallbackTarget() -> impl IntoView {
     let (color, set_color) = signal(Some("orange".to_string()));
 
     let styles = Styles::builder()
-        .with_optional_unchecked("color", color)
+        .with_optional_unchecked("color", move || color.get())
         .build()
         .merge(Styles::new().add_unchecked(" Color ", "gray"));
 

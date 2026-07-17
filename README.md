@@ -15,8 +15,9 @@ through `PaddingProperty`, while one shared value grammar such as `CssColor` can
 
 ## Features
 
-- Property-first checked construction with `.with(Property, value)` and `.add(Property, value)`
-- Owned, heterogeneous `CheckedDeclaration` values for prebuilding, storing, and prop drilling declarations
+- Declaration-first checked construction with `.with(Property.declare(value))` and
+  `.add(Property.declare(value))`
+- Owned, heterogeneous `CheckedDeclaration` values for building, storing, and prop drilling declarations
 - Static, optional, and always-present reactive declarations in one container
 - Priority-aware merging where a lower layer acts as a fallback for the current resolved property
 - Direct Leptos `IntoStyle` integration for `style=styles`
@@ -57,7 +58,7 @@ fn Panel(
     #[prop(into, optional)] styles: Styles,
 ) -> impl IntoView {
     view! {
-        <section style=styles.add(PaddingProperty, Padding::all(px(16)))>
+        <section style=styles.add(PaddingProperty.declare(Padding::all(px(16))))>
             "Content"
         </section>
     }
@@ -69,7 +70,9 @@ fn Demo() -> impl IntoView {
 
     view! {
         <Panel styles=Styles::builder()
-            .with_optional(ColorProperty, accent)
+            .with_optional(move || {
+                accent.get().map(|color| ColorProperty.declare(color))
+            })
             .build()
         />
     }
@@ -89,8 +92,8 @@ use leptos_styles::{
 };
 
 let styles = Styles::builder()
-    .with(ColorProperty, rgb(255, 0, 0))
-    .with(BackgroundColorProperty, rgb(255, 0, 0))
+    .with(ColorProperty.declare(rgb(255, 0, 0)))
+    .with(BackgroundColorProperty.declare(rgb(255, 0, 0)))
     .build();
 
 assert_eq!(
@@ -112,7 +115,7 @@ let owner = Owner::new();
 owner.with(|| {
     let (color, set_color) = signal(rgb(255, 0, 0));
     let styles = Styles::builder()
-        .with_reactive(ColorProperty, color)
+        .with_reactive(move || ColorProperty.declare(color.get()))
         .build();
 
     assert_eq!(styles.to_style_string(), "color:rgb(255, 0, 0);");
@@ -150,17 +153,13 @@ assert_eq!(styles.to_style_string(), "padding:16px;color:rgb(255, 0, 0);");
 
 The builder and chaining APIs mirror one another:
 
-- `with(property, value)` / `add(property, value)` construct one checked declaration.
-- `with_optional(property, source)` / `add_optional(property, source)` accept `Option`, `Signal<Option<_>>`,
-  `ReadSignal<Option<_>>`, or a closure returning `Option<_>` while keeping the selected property grammar.
-- `with_reactive(property, source)` / `add_reactive(property, source)` accept an always-present `Signal<_>`,
-  `ReadSignal<_>`, or closure without requiring an artificial `Some(...)` wrapper.
-- `with_global(property, keyword)` / `add_global(property, keyword)` use a CSS-wide keyword through the ordinary
-  property's explicit checked path.
-- `with_declaration(declaration)` / `add_declaration(declaration)` accept a prebuilt `CheckedDeclaration` or parsed
-  `StyleEntry`.
-- `with_optional_declaration(source)` / `add_optional_declaration(source)` allow a reactive source to change its
-  complete declaration, including its property.
+- `with(declaration)` / `add(declaration)` accept a prebuilt `CheckedDeclaration` or explicit `StyleEntry`.
+- `with_optional(source)` / `add_optional(source)` accept an `Option` or a closure returning `Option`; a reactive
+  source may change its complete declaration, including its property.
+- `with_reactive(move || declaration)` / `add_reactive(move || declaration)` accept an always-present reactive
+  declaration without requiring an artificial `Some(...)` wrapper. The closure form works on stable and nightly.
+- Property selectors build checked declarations with `declare(value)` or `declare_global(keyword)`; `AllProperty`
+  accepts its CSS-wide keyword through `declare(keyword)`.
 - `with_declarations(iter)` / `add_declarations(iter)` add heterogeneous prebuilt declarations.
 - `merge(other)` treats `other` as a lower-priority fallback layer.
 
@@ -183,7 +182,7 @@ let styles = Styles::builder()
     .with_unchecked("display", "grid")
     .with_optional_unchecked("font-family", Some("system-ui"))
     .build()
-    .add_declaration(StyleEntry::parse("contain: layout").unwrap());
+    .add(StyleEntry::parse("contain: layout").unwrap());
 
 assert_eq!(
     styles.to_style_string(),

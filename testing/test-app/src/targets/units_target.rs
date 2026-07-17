@@ -16,20 +16,11 @@ use leptos_styles::{
 #[component]
 pub fn UnitsTarget() -> impl IntoView {
     let styles = Styles::builder()
-        .with(
-            WidthProperty,
-            Size::from(NonNegativeLengthPercentage::new(pct(50))),
-        )
-        .with(
-            HeightProperty,
-            Size::from(NonNegativeLengthPercentage::new(vh(40))),
-        )
-        .with(PaddingProperty, Padding::all(em(1.5)))
-        .with(
-            MarginProperty,
-            Margin::All(LengthPercentageAuto::from(rem(2))),
-        )
-        .with(RightProperty, LengthPercentageAuto::from(vw(10)))
+        .with(WidthProperty.declare(Size::from(NonNegativeLengthPercentage::new(pct(50)))))
+        .with(HeightProperty.declare(Size::from(NonNegativeLengthPercentage::new(vh(40)))))
+        .with(PaddingProperty.declare(Padding::all(em(1.5))))
+        .with(MarginProperty.declare(Margin::All(LengthPercentageAuto::from(rem(2)))))
+        .with(RightProperty.declare(LengthPercentageAuto::from(vw(10))))
         .build();
 
     view! {

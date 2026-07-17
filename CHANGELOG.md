@@ -13,26 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial standalone `leptos-styles` crate for prop-drillable, reactive ownership of one complete
   inline `style` attribute in Leptos applications.
-- Property-first checked builder and chaining APIs: `with` / `add`, `with_reactive` / `add_reactive` for
-  always-present signals and derived values, their optional variants, and `with_global` / `add_global` for CSS-wide
-  keywords.
+- Declaration-first checked builder and chaining APIs: `with` / `add` accept complete
+  `CheckedDeclaration` values, `with_reactive` / `add_reactive` accept always-present declaration closures, and their
+  optional variants accept `Option` or closures returning `Option`.
 - A default `typed-css` feature with re-exports of `leptos-css` checked declarations, property
   selectors, value grammars, CSS custom-property support, and constructor helpers. Disabling
   default features leaves an unchecked string container and parsing escape hatches without a
   `leptos-css` dependency.
-- Complete-declaration APIs (`with_declaration`, `with_optional_declaration`,
-  `with_declarations`, and their `add_*` counterparts) for static or reactive
-  `leptos_css::CheckedDeclaration` values. Checked entries retain the complete declaration so
-  property and value cannot be mismatched after validation.
+- Iterator APIs (`with_declarations` and `add_declarations`) for heterogeneous prebuilt
+  `leptos_css::CheckedDeclaration` values. Checked entries retain the complete declaration so property and value
+  cannot be mismatched after validation.
 - Explicit `with_unchecked` / `add_unchecked` APIs and optional variants for unsupported raw CSS.
   Raw property names and values do not implicitly cross the checked boundary; their public supporting types are
   explicitly named `UncheckedPropertyName`, `UncheckedStyleValue`, and `IntoUncheckedPropertyName`.
 - `StyleEntry` support for optional static and reactive complete declarations, including sources
   whose property and value can both change. Each present declaration is resolved once per
   serialization pass and that snapshot is used for both priority selection and output.
-- Optional-source conversions for `Option`, closures, and, on stable builds, Leptos `Signal` and
-  `ReadSignal` values. The `nightly` feature forwards to Leptos and optional `leptos-css`; callers
-  can use `move || signal.get()` where nightly's callable signals overlap the closure impls.
+- Optional-source conversions for `Option` and closures. Reactive sources use `move || ...` directly on stable and
+  nightly, avoiding feature-dependent signal conversion behavior. The `nightly` feature forwards to Leptos and
+  optional `leptos-css`.
 - `From` impls for building `Styles` from one complete declaration or an array of declarations.
 - `Styles::is_reactive` for inspecting whether the container subscribes to any reactive signal,
   cached on insertion for O(1) lookup.

@@ -14,14 +14,13 @@ pub fn TypedValueTarget() -> impl IntoView {
     let (color, set_color) = signal(Some(CssColor::Named(CssColorName::Red)));
 
     let styles = Styles::builder()
-        .with(
-            WidthProperty,
-            Size::from(NonNegativeLengthPercentage::new(px(120))),
-        )
-        .with_reactive(ColorProperty, move || {
-            color
-                .get()
-                .unwrap_or(CssColor::Named(CssColorName::Transparent))
+        .with(WidthProperty.declare(Size::from(NonNegativeLengthPercentage::new(px(120)))))
+        .with_reactive(move || {
+            ColorProperty.declare(
+                color
+                    .get()
+                    .unwrap_or(CssColor::Named(CssColorName::Transparent)),
+            )
         })
         .build();
 

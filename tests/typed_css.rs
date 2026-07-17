@@ -8,7 +8,7 @@ use std::sync::{
 use assertr::prelude::*;
 use leptos::prelude::*;
 use leptos_styles::{
-    Styles,
+    CheckedDeclaration, Styles,
     css::{
         CssColor, CssColorName, CssCustomProperty, GlobalKeyword, LengthPercentageAuto,
         LengthPercentageCalculation, Margin, NonNegativeLengthPercentage, Padding, Size,
@@ -29,14 +29,11 @@ fn sized(value: leptos_styles::css::CssDimension) -> Size {
 #[test]
 fn checked_property_value_pairs_render_canonical_css() {
     let styles = Styles::builder()
-        .with(WidthProperty, sized(px(320)))
-        .with(HeightProperty, sized(vh(40)))
-        .with(PaddingProperty, Padding::all(em(1.5)))
-        .with(
-            MarginProperty,
-            Margin::All(LengthPercentageAuto::from(rem(2))),
-        )
-        .with(RightProperty, LengthPercentageAuto::from(vw(10)))
+        .with(WidthProperty.declare(sized(px(320))))
+        .with(HeightProperty.declare(sized(vh(40))))
+        .with(PaddingProperty.declare(Padding::all(em(1.5))))
+        .with(MarginProperty.declare(Margin::All(LengthPercentageAuto::from(rem(2)))))
+        .with(RightProperty.declare(LengthPercentageAuto::from(vw(10))))
         .build();
 
     assert_that!(styles.to_style_string())
@@ -46,8 +43,8 @@ fn checked_property_value_pairs_render_canonical_css() {
 #[test]
 fn one_color_grammar_builds_multiple_precisely_named_properties() {
     let styles = Styles::builder()
-        .with(ColorProperty, rgb(255, 0, 0))
-        .with(BackgroundColorProperty, rgb(255, 0, 0))
+        .with(ColorProperty.declare(rgb(255, 0, 0)))
+        .with(BackgroundColorProperty.declare(rgb(255, 0, 0)))
         .build();
 
     assert_that!(styles.to_style_string())
@@ -57,7 +54,7 @@ fn one_color_grammar_builds_multiple_precisely_named_properties() {
 #[test]
 fn checked_calculation_stays_inside_the_width_grammar() {
     let width = Size::Calculation(LengthPercentageCalculation::new(pct(100) - px(20)));
-    let styles = Styles::new().add(WidthProperty, width);
+    let styles = Styles::new().add(WidthProperty.declare(width));
 
     assert_that!(styles.to_style_string()).is_equal_to("width:calc(100% - 20px);".to_string());
 }
@@ -66,14 +63,11 @@ fn checked_calculation_stays_inside_the_width_grammar() {
 fn checked_custom_properties_and_references_retain_their_color_grammar() {
     let missing = CssCustomProperty::<CssColor>::new("--MissingColor");
     let styles = Styles::builder()
-        .with(ACCENT_COLOR, CssColor::Named(CssColorName::Fuchsia))
+        .with(ACCENT_COLOR.declare(CssColor::Named(CssColorName::Fuchsia)))
+        .with(ColorProperty.declare(var(&ACCENT_COLOR, CssColor::Named(CssColorName::Black))))
         .with(
-            ColorProperty,
-            var(&ACCENT_COLOR, CssColor::Named(CssColorName::Black)),
-        )
-        .with(
-            BackgroundColorProperty,
-            var(&missing, CssColor::Named(CssColorName::CurrentColor)),
+            BackgroundColorProperty
+                .declare(var(&missing, CssColor::Named(CssColorName::CurrentColor))),
         )
         .build();
 
@@ -85,10 +79,11 @@ fn checked_custom_properties_and_references_retain_their_color_grammar() {
 
 #[test]
 fn optional_checked_values_render_only_when_present() {
-    let some = Styles::new().add_optional(TopProperty, Some(LengthPercentageAuto::from(px(8))));
+    let some =
+        Styles::new().add_optional(Some(TopProperty.declare(LengthPercentageAuto::from(px(8)))));
     assert_that!(some.to_style_string()).is_equal_to("top:8px;".to_string());
 
-    let none = Styles::new().add_optional(TopProperty, None::<LengthPercentageAuto>);
+    let none = Styles::new().add_optional(None::<CheckedDeclaration>);
     assert_that!(none.to_style_string()).is_equal_to(String::new());
 }
 
@@ -97,7 +92,8 @@ fn signal_carrying_exact_property_value_updates_reactively() {
     let owner = Owner::new();
     owner.with(|| {
         let (color, set_color) = signal(Some(CssColor::Named(CssColorName::Red)));
-        let styles = Styles::new().add_optional(ColorProperty, color);
+        let styles = Styles::new()
+            .add_optional(move || color.get().map(|value| ColorProperty.declare(value)));
 
         assert_that!(styles.is_reactive()).is_true();
         assert_that!(styles.to_style_string()).is_equal_to("color:red;".to_string());
@@ -111,15 +107,14 @@ fn signal_carrying_exact_property_value_updates_reactively() {
 }
 
 #[test]
-fn always_present_reactive_values_support_signals_and_derived_closures() {
+fn always_present_reactive_declarations_use_direct_closures() {
     let owner = Owner::new();
     owner.with(|| {
         let (color, set_color) = signal(rgb(255, 0, 0));
-        let color_for_background = color;
         let styles = Styles::builder()
-            .with_reactive(ColorProperty, color)
+            .with_reactive(move || ColorProperty.declare(color.get()))
             .build()
-            .add_reactive(BackgroundColorProperty, move || color_for_background.get());
+            .add_reactive(move || BackgroundColorProperty.declare(color.get()));
 
         assert_that!(styles.is_reactive()).is_true();
         assert_that!(styles.to_style_string())
@@ -135,10 +130,10 @@ fn always_present_reactive_values_support_signals_and_derived_closures() {
 fn optional_checked_closure_can_derive_a_value() {
     let enabled = Arc::new(AtomicBool::new(true));
     let enabled_for_style = Arc::clone(&enabled);
-    let styles = Styles::new().add_optional(PaddingProperty, move || {
+    let styles = Styles::new().add_optional(move || {
         enabled_for_style
             .load(Ordering::Relaxed)
-            .then(|| Padding::all(px(16)))
+            .then(|| PaddingProperty.declare(Padding::all(px(16))))
     });
 
     assert_that!(styles.to_style_string()).is_equal_to("padding:16px;".to_string());
@@ -163,14 +158,14 @@ fn reactive_complete_declaration_can_change_its_property() {
     let evaluations = Arc::new(AtomicUsize::new(0));
     let use_background_for_style = Arc::clone(&use_background);
     let evaluations_for_style = Arc::clone(&evaluations);
-    let styles = Styles::new().add_optional_declaration(move || {
+    let styles = Styles::new().add_reactive(move || {
         evaluations_for_style.fetch_add(1, Ordering::Relaxed);
         let value = CssColor::Named(CssColorName::Red);
-        Some(if use_background_for_style.load(Ordering::Relaxed) {
+        if use_background_for_style.load(Ordering::Relaxed) {
             BackgroundColorProperty.declare(value)
         } else {
             ColorProperty.declare(value)
-        })
+        }
     });
 
     assert_that!(styles.to_style_string()).is_equal_to("color:red;".to_string());
@@ -184,11 +179,11 @@ fn reactive_complete_declaration_can_change_its_property() {
 #[test]
 fn merge_resolves_priority_from_each_declarations_current_property() {
     let higher = Styles::builder()
-        .with(ColorProperty, CssColor::Named(CssColorName::Red))
+        .with(ColorProperty.declare(CssColor::Named(CssColorName::Red)))
         .build();
     let lower = Styles::builder()
-        .with(ColorProperty, CssColor::Named(CssColorName::Blue))
-        .with(PaddingProperty, Padding::all(px(8)))
+        .with(ColorProperty.declare(CssColor::Named(CssColorName::Blue)))
+        .with(PaddingProperty.declare(Padding::all(px(8))))
         .build();
 
     assert_that!(higher.merge(lower).to_style_string())
@@ -198,8 +193,8 @@ fn merge_resolves_priority_from_each_declarations_current_property() {
 #[test]
 fn css_wide_keywords_use_explicit_checked_paths() {
     let styles = Styles::builder()
-        .with_global(PaddingProperty, GlobalKeyword::Inherit)
-        .with(AllProperty, GlobalKeyword::RevertLayer)
+        .with(PaddingProperty.declare_global(GlobalKeyword::Inherit))
+        .with(AllProperty.declare(GlobalKeyword::RevertLayer))
         .build();
 
     assert_that!(styles.to_style_string())
