@@ -1,23 +1,21 @@
 use leptos::prelude::*;
-use leptos_styles::Styles;
+use leptos_styles::{Styles, UncheckedDeclaration};
 
 /// Renders one value during SSR and another during hydration.
 ///
-/// The browser test sees the hydrated `"fresh"` value, proving the style
-/// attribute is rewritten by the client-side runtime — i.e. that
-/// [`leptos_styles::Styles`] participates in hydration rather than being
-/// frozen at SSR.
+/// The browser test sees the hydrated `green` value, proving that
+/// [`leptos_styles::Styles`] reconciles a server/client mismatch during
+/// hydration rather than being frozen at SSR.
 #[component]
 pub fn HydrateTarget() -> impl IntoView {
     let color = if cfg!(feature = "ssr") {
-        "stale"
+        "red"
     } else {
-        "fresh"
+        "green"
     };
-    let styles = Styles::builder()
-        .with_unchecked("display", "grid")
-        .with_unchecked("color", color)
-        .build();
+    let styles = Styles::new()
+        .with(UncheckedDeclaration::new("display", "grid"))
+        .with(UncheckedDeclaration::new("color", color));
 
     view! {
         <section>

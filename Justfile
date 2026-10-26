@@ -12,10 +12,11 @@ once:
 install-tools:
   cargo install just
   cargo install cargo-leptos
-  cargo install wasm-bindgen-cli --version 0.2.125 --locked
+  cargo install wasm-bindgen-cli --version 0.2.129 --locked
   cargo install cargo-deny
   cargo install cargo-semver-checks
   cargo install leptosfmt
+  cargo install cargo-sort
 
 # Enable the WASM target required by `cargo leptos` and the wasm compile check.
 enable-wasm:
@@ -29,65 +30,51 @@ fmt:
 fmt-check:
   cargo fmt --all --check
 
+# Sort the dependencies in the crate's and the test app's `Cargo.toml`.
+sort:
+  cargo sort --workspace
+  cargo sort ./testing/test-app
+
+# Check that the dependencies in the crate's and the test app's `Cargo.toml` are sorted.
+sort-check:
+  cargo sort --workspace --check
+  cargo sort ./testing/test-app --check
+
 # Format Leptos code.
 leptosfmt:
   leptosfmt ./testing/test-app/*
 
-# Run clippy with the default checked CSS API.
+# Run clippy with warnings denied.
 clippy:
   cargo clippy --all-targets -- -D warnings
 
-# Run clippy on the minimal unchecked-only feature shape.
-clippy-no-default:
-  cargo clippy --all-targets --no-default-features -- -D warnings
-
-# Type-check the default checked CSS API.
+# Type-check the crate.
 check:
   cargo check --all-targets
 
-# Type-check the minimal unchecked-only feature shape.
-check-no-default:
-  cargo check --all-targets --no-default-features
-
-# Type-check the checked CSS API with Leptos' nightly closure implementations.
+# Type-check with the nightly features of Leptos, which a downstream crate may enable.
 check-nightly:
-  cargo +nightly check --all-targets --all-features --locked
+  cargo +nightly check --all-targets --features leptos/nightly --locked
 
-# Type-check the unchecked-only API with Leptos' nightly closure implementations.
-check-nightly-no-default:
-  cargo +nightly check --all-targets --no-default-features --features nightly --locked
-
-# Verify the default checked CSS API compiles for wasm32-unknown-unknown.
+# Type-check the crate for wasm32-unknown-unknown.
 check-wasm:
   cargo check --target wasm32-unknown-unknown --locked
 
-# Verify the minimal unchecked-only feature shape compiles for wasm32-unknown-unknown.
-check-wasm-no-default:
-  cargo check --target wasm32-unknown-unknown --no-default-features --locked
-
-# Run unit tests, integration tests, and doctests for the default feature set.
+# Run unit tests, integration tests, and doctests.
 test:
   cargo test
 
-# Run only the crate unit tests with default features.
+# Run only the crate unit tests.
 test-lib:
   cargo test --lib
 
-# Run only the crate unit tests with default features disabled.
-test-lib-no-default:
-  cargo test --lib --no-default-features
-
-# Run only the crate doc tests with default features.
+# Run only the crate doc tests.
 test-doc:
   cargo test --doc
 
-# Run only the crate doc tests with default features disabled.
-test-doc-no-default:
-  cargo test --doc --no-default-features
-
-# Run the typed-css integration test suite (`tests/typed_css.rs`).
-test-typed-css:
-  cargo test --test typed_css
+# Run the integration tests of declarations through `Styles` (`tests/declarations.rs`).
+test-integration:
+  cargo test --test declarations
 
 # Build documentation with rustdoc warnings denied (matches CI).
 doc:
@@ -122,21 +109,22 @@ clean:
   cargo clean
   cargo clean --manifest-path ./testing/test-app/Cargo.toml
 
-# Run the most important verification commands for this crate. Covers both feature
-# configurations (default checked CSS and no-default unchecked-only) since both public shapes
-# must compile cleanly.
+# Update dependencies of the crate and the test app, sort manifests, and format code.
+tidy:
+  cargo update --workspace
+  cargo update --workspace --manifest-path ./testing/test-app/Cargo.toml
+  just sort
+  just fmt
+
+# Run the full non-mutating validation suite.
 verify:
   just fmt-check
+  just sort-check
   just check
-  just check-no-default
   just check-wasm
-  just check-wasm-no-default
   just clippy
-  just clippy-no-default
   just test-lib
-  just test-lib-no-default
   just test-doc
-  just test-doc-no-default
-  just test-typed-css
+  just test-integration
   just browser-test
   just doc

@@ -1,0 +1,2 @@
+[patch.crates-io]
+typed-css = { path = "/home/lukas/dev/leptos-css" }

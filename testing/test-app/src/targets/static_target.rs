@@ -1,16 +1,15 @@
 use leptos::prelude::*;
-use leptos_styles::Styles;
+use leptos_styles::{Styles, UncheckedDeclaration};
 
-/// Renders styles built statically from the [`Styles::builder`] API.
+/// Renders a fully static `Styles` value.
 ///
-/// Mixes a typo'd whitespace-padded property name with a clean one to confirm
-/// that property normalization runs end-to-end through Leptos rendering.
+/// Mixes a whitespace-padded, mixed-case property name with a clean one to
+/// confirm that property normalization runs end-to-end through Leptos rendering.
 #[component]
 pub fn StaticTarget() -> impl IntoView {
-    let styles = Styles::builder()
-        .with_unchecked(" Display ", "grid")
-        .with_unchecked("color", "red")
-        .build();
+    let styles = Styles::new()
+        .with(UncheckedDeclaration::new(" Display ", "grid"))
+        .with(UncheckedDeclaration::new("color", "red"));
 
     view! {
         <section>

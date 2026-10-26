@@ -1,29 +1,24 @@
 use leptos::prelude::*;
 use leptos_styles::{
     Styles,
-    css::{CssColor, CssColorName, CssCustomProperty, css_custom_property, var},
-    property::{BackgroundColorProperty, ColorProperty},
+    css::property::{BACKGROUND_COLOR, COLOR},
+    css::{Color, CustomProperty, NamedColor, custom_property, var, var_or},
 };
 
-css_custom_property!(ACCENT_COLOR: CssColor = "--AccentColor");
+custom_property!(ACCENT_COLOR: Color = "--AccentColor");
 
-/// Renders styles built with checked custom properties and `css::var`.
+/// Renders styles built with checked custom properties and `var()`.
 ///
 /// Defines a CSS custom property on the same element, references it via `var()`
 /// in one declaration, and exercises the fallback branch with an undefined
-/// custom property in another. The browser test asserts the exact serialized
-/// `var(...)` syntax to catch regressions in the value writer.
+/// custom property in another.
 #[component]
 pub fn VarTarget() -> impl IntoView {
-    let missing_color = CssCustomProperty::<CssColor>::new("--MissingColor");
-    let styles = Styles::builder()
-        .with(ACCENT_COLOR.declare(CssColor::Named(CssColorName::Fuchsia)))
-        .with(ColorProperty.declare(var(&ACCENT_COLOR, CssColor::Named(CssColorName::Black))))
-        .with(BackgroundColorProperty.declare(var(
-            &missing_color,
-            CssColor::Named(CssColorName::CurrentColor),
-        )))
-        .build();
+    let missing_color = CustomProperty::<Color>::new("--MissingColor");
+    let styles = Styles::new()
+        .with(ACCENT_COLOR.declare(NamedColor::Fuchsia))
+        .with(COLOR.declare(var(&ACCENT_COLOR)))
+        .with(BACKGROUND_COLOR.declare(var_or(&missing_color, NamedColor::CurrentColor)));
 
     view! {
         <section>

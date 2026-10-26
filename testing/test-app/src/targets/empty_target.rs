@@ -1,17 +1,20 @@
 use leptos::prelude::*;
-use leptos_styles::Styles;
+use leptos_styles::{Styles, UncheckedDeclaration};
 
 /// Renders a single optional style entry that the browser test toggles to
 /// `None` and back.
 ///
-/// When all entries resolve to `None` the rendered string is empty, and the
-/// `style` attribute should be removed from the element entirely rather than
-/// left as `style=""`. Restoring the value should re-create the attribute.
+/// When every entry resolves to `None`, `Styles` removes the `style` attribute
+/// instead of leaving `style=""`. Restoring the value creates the attribute
+/// again.
 #[component]
 pub fn EmptyTarget() -> impl IntoView {
-    let (color, set_color) = signal(Some("ephemeral".to_string()));
-
-    let styles = Styles::new().add_optional_unchecked("color", move || color.get());
+    let (color, set_color) = signal(Some("teal"));
+    let styles = Styles::new().with(move || {
+        color
+            .get()
+            .map(|color| UncheckedDeclaration::new("color", color))
+    });
 
     view! {
         <section>
@@ -20,10 +23,7 @@ pub fn EmptyTarget() -> impl IntoView {
             <button id="empty-clear" on:click=move |_| set_color.set(None)>
                 "Clear style"
             </button>
-            <button
-                id="empty-restore"
-                on:click=move |_| set_color.set(Some("ephemeral".to_string()))
-            >
+            <button id="empty-restore" on:click=move |_| set_color.set(Some("teal"))>
                 "Restore style"
             </button>
         </section>

@@ -1,27 +1,23 @@
 use leptos::prelude::*;
 use leptos_styles::{
     Styles,
-    css::{
-        LengthPercentageAuto, Margin, NonNegativeLengthPercentage, Padding, Size, em, pct, rem, vh,
-        vw,
-    },
-    property::{HeightProperty, MarginProperty, PaddingProperty, RightProperty, WidthProperty},
+    css::property::{HEIGHT, MARGIN, PADDING, RIGHT, WIDTH},
+    css::{Auto, Margin, em, pct, rem, vh, vw},
 };
 
-/// Renders styles using non-`px` CSS lengths to validate `CssLength` formatting
+/// Renders styles using non-`px` CSS lengths to validate length formatting
 /// through the full `IntoStyle` pipeline.
 ///
 /// Covers integer- and fractional-valued floats so any regression in numeric
 /// formatting (trailing zeroes, locale dependence, etc.) shows up here.
 #[component]
 pub fn UnitsTarget() -> impl IntoView {
-    let styles = Styles::builder()
-        .with(WidthProperty.declare(Size::from(NonNegativeLengthPercentage::new(pct(50)))))
-        .with(HeightProperty.declare(Size::from(NonNegativeLengthPercentage::new(vh(40)))))
-        .with(PaddingProperty.declare(Padding::all(em(1.5))))
-        .with(MarginProperty.declare(Margin::All(LengthPercentageAuto::from(rem(2)))))
-        .with(RightProperty.declare(LengthPercentageAuto::from(vw(10))))
-        .build();
+    let styles = Styles::new()
+        .with(WIDTH.declare(pct(50)))
+        .with(HEIGHT.declare(vh(40)))
+        .with(PADDING.declare(em(1.5)))
+        .with(MARGIN.declare(Margin::symmetric(rem(2), Auto)))
+        .with(RIGHT.declare(vw(10)));
 
     view! {
         <section>

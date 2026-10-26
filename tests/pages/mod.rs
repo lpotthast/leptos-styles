@@ -57,8 +57,29 @@ pub trait BaseActions {
         Ok(())
     }
 
+    /// Return the browser's parsed inline style (`element.style.cssText`).
+    ///
+    /// Server-rendered attributes and CSSOM updates serialize identically in this form, and
+    /// declarations the browser rejects are absent from it.
     async fn style_of(&self, id: &str) -> Result<String, Report> {
-        Ok(self.style_attribute(id).await?.unwrap_or_default())
+        let element = self
+            .driver()
+            .find(By::Id(id))
+            .await
+            .context_with(|| format!("failed to find #{id}"))?;
+        let args = vec![
+            element
+                .to_json()
+                .context_with(|| format!("failed to reference #{id}"))?,
+        ];
+        let css_text = self
+            .driver()
+            .execute("return arguments[0].style.cssText;", args)
+            .await
+            .context_with(|| format!("failed to read inline style of #{id}"))?;
+        Ok(css_text
+            .convert::<String>()
+            .context_with(|| format!("inline style of #{id} is not a string"))?)
     }
 
     async fn style_attribute(&self, id: &str) -> Result<Option<String>, Report> {

@@ -1,415 +1,242 @@
-use std::{borrow::Cow, error::Error, fmt, str::FromStr};
+use std::{borrow::Cow, fmt, sync::Arc};
 
-use leptos::prelude::{Get, Signal};
+use crate::{Styles, UncheckedDeclaration};
 
-/// An unchecked CSS property name used by the explicit raw-string APIs.
-pub type UncheckedPropertyName = Cow<'static, str>;
-
-/// An unchecked CSS value used by the explicit raw-string APIs.
-pub type UncheckedStyleValue = Cow<'static, str>;
-
-pub(crate) fn normalize_style_property(property: UncheckedPropertyName) -> UncheckedPropertyName {
-    let original = property.as_ref();
-    let trimmed = original.trim();
-
-    // CSS custom properties are case-sensitive and must not be lowercased.
-    if trimmed.starts_with("--") {
-        if trimmed == original {
-            property
-        } else {
-            Cow::Owned(trimmed.to_string())
-        }
-    } else {
-        let normalized = trimmed.to_ascii_lowercase();
-        if normalized == original {
-            property
-        } else {
-            Cow::Owned(normalized)
-        }
-    }
-}
-
-/// Conversion into an unchecked CSS property name.
-///
-/// This trait is consumed only by APIs whose names end in `_unchecked`.
-pub trait IntoUncheckedPropertyName {
-    /// Convert `self` into an [`UncheckedPropertyName`].
-    fn into_unchecked_property_name(self) -> UncheckedPropertyName;
-}
-
-impl IntoUncheckedPropertyName for &'static str {
-    fn into_unchecked_property_name(self) -> UncheckedPropertyName {
-        Cow::Borrowed(self)
-    }
-}
-
-impl IntoUncheckedPropertyName for String {
-    fn into_unchecked_property_name(self) -> UncheckedPropertyName {
-        Cow::Owned(self)
-    }
-}
-
-impl IntoUncheckedPropertyName for UncheckedPropertyName {
-    fn into_unchecked_property_name(self) -> UncheckedPropertyName {
-        self
-    }
-}
-
-/// Error returned when parsing a raw CSS declaration into a [`StyleEntry`] fails.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ParseStyleEntryError {
-    input: String,
-    reason: &'static str,
-}
-
-impl ParseStyleEntryError {
-    fn new(input: &str, reason: &'static str) -> Self {
-        Self {
-            input: input.to_string(),
-            reason,
-        }
-    }
-
-    /// The declaration string that failed to parse.
-    #[must_use]
-    pub fn input(&self) -> &str {
-        &self.input
-    }
-
-    /// A short reason describing why parsing failed.
-    #[must_use]
-    pub fn reason(&self) -> &'static str {
-        self.reason
-    }
-}
-
-impl fmt::Display for ParseStyleEntryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "failed to parse CSS style declaration {:?}: {}",
-            self.input, self.reason
-        )
-    }
-}
-
-impl Error for ParseStyleEntryError {}
-
-fn parse_style_declaration(
-    declaration: &str,
-) -> Result<(UncheckedPropertyName, UncheckedStyleValue), ParseStyleEntryError> {
-    let Some((property, value)) = declaration.split_once(':') else {
-        return Err(ParseStyleEntryError::new(
-            declaration,
-            "missing ':' separator",
-        ));
-    };
-
-    let property = property.trim();
-    if property.is_empty() {
-        return Err(ParseStyleEntryError::new(
-            declaration,
-            "missing property name",
-        ));
-    }
-
-    let value = value.trim().trim_end_matches(';').trim();
-    if value.is_empty() {
-        return Err(ParseStyleEntryError::new(
-            declaration,
-            "missing property value",
-        ));
-    }
-
-    Ok((
-        Cow::Owned(property.to_string()),
-        Cow::Owned(value.to_string()),
-    ))
-}
-
-/// One resolved declaration, either from the checked boundary or an explicit unchecked API.
+/// One declaration that is ready to render, either checked or unchecked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum StyleDeclaration {
-    Unchecked {
-        property: UncheckedPropertyName,
-        value: UncheckedStyleValue,
-    },
-    #[cfg(feature = "typed-css")]
-    Checked(leptos_css::CheckedDeclaration),
+    Unchecked(UncheckedDeclaration),
+    Checked(typed_css::Declaration),
 }
 
 impl StyleDeclaration {
-    pub(crate) fn unchecked(property: UncheckedPropertyName, value: UncheckedStyleValue) -> Self {
-        Self::Unchecked {
-            property: normalize_style_property(property),
-            value,
-        }
-    }
-
     pub(crate) fn property_name(&self) -> &str {
         match self {
-            Self::Unchecked { property, .. } => property,
-            #[cfg(feature = "typed-css")]
+            Self::Unchecked(declaration) => declaration.property_name(),
             Self::Checked(declaration) => declaration.property_name(),
         }
     }
 
+    pub(crate) fn value(&self) -> &str {
+        match self {
+            Self::Unchecked(declaration) => declaration.value(),
+            Self::Checked(declaration) => declaration.value(),
+        }
+    }
+
     pub(crate) fn write_to(&self, buf: &mut String) {
+        buf.push_str(self.property_name());
+        buf.push(':');
+        buf.push_str(self.value());
+        buf.push(';');
+    }
+}
+
+/// A closure that returns the current declarations. Calling it inside a reactive observer
+/// subscribes the observer to the signals that it reads.
+type Resolver = Arc<dyn Fn() -> StyleEntry + Send + Sync>;
+
+/// Where the declarations of an entry come from. A static or nested entry always has a
+/// declaration, because `Styles` drops a static `None` or an empty `Styles` instead of storing it.
+#[derive(Clone)]
+enum Source {
+    Static(StyleDeclaration),
+    Reactive(Resolver),
+    /// A whole `Styles`, boxed because `Styles` stores its entries inline.
+    Nested(Box<Styles>),
+}
+
+impl fmt::Debug for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unchecked { property, value } => {
-                buf.push_str(property);
-                buf.push(':');
-                buf.push_str(value);
-                buf.push(';');
-            }
-            #[cfg(feature = "typed-css")]
-            Self::Checked(declaration) => declaration.write_declaration_to(buf),
+            Self::Static(declaration) => f.debug_tuple("Static").field(declaration).finish(),
+            Self::Reactive(_) => f.write_str("Reactive"),
+            Self::Nested(styles) => f.debug_tuple("Nested").field(styles).finish(),
         }
     }
 }
 
-#[derive(Clone, Debug)]
-pub(crate) enum StyleDeclarationSource {
-    Static(Option<StyleDeclaration>),
-    Reactive(Signal<Option<StyleDeclaration>>),
-}
-
-impl StyleDeclarationSource {
-    fn resolve(&self) -> Option<Cow<'_, StyleDeclaration>> {
-        match self {
-            Self::Static(declaration) => declaration.as_ref().map(Cow::Borrowed),
-            Self::Reactive(signal) => signal.get().map(Cow::Owned),
-        }
-    }
-
-    fn static_declaration(&self) -> Option<&StyleDeclaration> {
-        match self {
-            Self::Static(Some(declaration)) => Some(declaration),
-            Self::Static(None) | Self::Reactive(_) => None,
-        }
-    }
-
-    fn touch_if_reactive(&self) {
-        if let Self::Reactive(signal) = self {
-            let _ = signal.get();
-        }
-    }
-
-    const fn is_reactive(&self) -> bool {
-        matches!(self, Self::Reactive(_))
-    }
-}
-
-/// A storable style entry whose optional declaration may be static or reactive.
+/// One entry of [`Styles`](crate::Styles), which is a declaration that may be absent or reactive,
+/// or a whole `Styles`.
 ///
-/// With the `typed-css` feature, checked entries retain the complete
-/// `leptos_css::CheckedDeclaration`. Raw property/value strings can enter only through
-/// the explicit `_unchecked` constructors or the parsing escape hatch.
+/// Entries of different kinds have the same type, so code can collect them in one list. A checked
+/// declaration, an [`UncheckedDeclaration`], a `Styles`, an `Option` of any of them, and a
+/// closure that returns one of them all convert into a `StyleEntry`.
+///
+/// ```rust
+/// use leptos::prelude::*;
+/// use leptos_styles::{
+///     StyleEntry, Styles,
+///     css::{pct, property::{DISPLAY, WIDTH}},
+/// };
+///
+/// let (wide, _set_wide) = signal(false);
+/// let entries = vec![
+///     StyleEntry::new(DISPLAY.grid()),
+///     StyleEntry::new(move || wide.get().then(|| WIDTH.declare(pct(100)))),
+/// ];
+/// assert_eq!(Styles::new().with_all(entries).to_style_string(), "display:grid;");
+/// ```
 #[derive(Clone, Debug)]
-pub struct StyleEntry {
-    source: StyleDeclarationSource,
-}
+pub struct StyleEntry(Option<Source>);
 
 impl StyleEntry {
-    pub(crate) fn static_optional(declaration: Option<StyleDeclaration>) -> Self {
-        Self {
-            source: StyleDeclarationSource::Static(declaration),
-        }
-    }
-
-    pub(crate) fn reactive_signal(value: Signal<Option<StyleDeclaration>>) -> Self {
-        Self {
-            source: StyleDeclarationSource::Reactive(value),
-        }
-    }
-
-    pub(crate) fn from_declaration(declaration: StyleDeclaration) -> Self {
-        Self::static_optional(Some(declaration))
-    }
-
-    /// Create an entry from a reactive optional unchecked value.
+    /// Create an entry from a declaration, a `Styles`, an `Option` of either, or a closure that
+    /// returns one of them.
     ///
-    /// When the signal returns `None`, this entry is excluded from the output. Prefer the
-    /// checked declaration APIs when the `typed-css` feature is enabled.
-    pub fn reactive_unchecked(
-        property: impl IntoUncheckedPropertyName,
-        value: impl Into<Signal<Option<UncheckedStyleValue>>>,
-    ) -> Self {
-        let property = normalize_style_property(property.into_unchecked_property_name());
-        let value = value.into();
-        Self::reactive_signal(Signal::derive(move || {
-            value
-                .get()
-                .map(|value| StyleDeclaration::unchecked(property.clone(), value))
-        }))
-    }
-
-    /// Create an entry from an always-present unchecked property/value pair.
-    ///
-    /// Prefer the checked declaration APIs when the `typed-css` feature is enabled.
-    pub fn always_unchecked(
-        property: impl IntoUncheckedPropertyName,
-        value: impl Into<UncheckedStyleValue>,
-    ) -> Self {
-        Self::from_declaration(StyleDeclaration::unchecked(
-            property.into_unchecked_property_name(),
-            value.into(),
-        ))
-    }
-
-    /// Parse a raw CSS declaration such as `"color: red"` into a style entry.
-    ///
-    /// This parser is an explicit unchecked escape hatch for existing declaration strings. It
-    /// rejects missing properties, missing values, and strings without a `:` separator.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParseStyleEntryError`] if the declaration is not a `property: value` pair.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use leptos_styles::StyleEntry;
-    ///
-    /// let entry = StyleEntry::parse("color: red").unwrap();
-    /// assert_eq!(entry.static_property_name(), Some("color"));
-    /// assert!(StyleEntry::parse("color").is_err());
-    /// ```
-    pub fn parse(declaration: &str) -> Result<Self, ParseStyleEntryError> {
-        let (property, value) = parse_style_declaration(declaration)?;
-        Ok(Self::always_unchecked(property, value))
-    }
-
-    /// Return the property name when this entry contains a present static declaration.
-    ///
-    /// Reactive entries return `None` because their declaration, including its property, can
-    /// change whenever the source is evaluated.
+    /// [`IntoStyleEntry`] describes the accepted values.
     #[must_use]
-    pub fn static_property_name(&self) -> Option<&str> {
-        self.source
-            .static_declaration()
-            .map(StyleDeclaration::property_name)
+    pub fn new<M>(source: impl IntoStyleEntry<M>) -> Self {
+        source.into_style_entry()
     }
 
-    pub(crate) fn resolve(&self) -> Option<Cow<'_, StyleDeclaration>> {
-        self.source.resolve()
+    /// Return an entry without a declaration.
+    pub(crate) const fn empty() -> Self {
+        Self(None)
     }
 
-    pub(crate) fn touch_reactive_dependencies(&self) {
-        self.source.touch_if_reactive();
+    pub(crate) fn reactive(resolve: impl Fn() -> StyleEntry + Send + Sync + 'static) -> Self {
+        Self(Some(Source::Reactive(Arc::new(resolve))))
     }
 
-    pub(crate) const fn is_reactive(&self) -> bool {
-        self.source.is_reactive()
-    }
-}
-
-#[cfg(feature = "typed-css")]
-impl From<leptos_css::CheckedDeclaration> for StyleEntry {
-    fn from(declaration: leptos_css::CheckedDeclaration) -> Self {
-        Self::from_declaration(StyleDeclaration::Checked(declaration))
-    }
-}
-
-impl FromStr for StyleEntry {
-    type Err = ParseStyleEntryError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s)
-    }
-}
-
-impl TryFrom<&str> for StyleEntry {
-    type Error = ParseStyleEntryError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        Self::parse(value)
-    }
-}
-
-impl TryFrom<String> for StyleEntry {
-    type Error = ParseStyleEntryError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(&value)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use assertr::prelude::*;
-
-    use super::{IntoUncheckedPropertyName, StyleEntry, UncheckedPropertyName};
-    use crate::Styles;
-
-    mod parsing {
-        use super::*;
-
-        #[test]
-        fn parse_recovers_property_value_pair() {
-            let entry = StyleEntry::parse("padding: 10px").expect("style declaration should parse");
-            let styles: Styles = entry.into();
-            assert_that!(styles.to_style_string()).is_equal_to("padding:10px;".to_string());
-        }
-
-        #[test]
-        fn parse_tolerates_trailing_semicolon() {
-            let entry = StyleEntry::parse("margin: 5px;").expect("style declaration should parse");
-            let styles: Styles = entry.into();
-            assert_that!(styles.to_style_string()).is_equal_to("margin:5px;".to_string());
-        }
-
-        #[test]
-        fn parse_rejects_missing_colon() {
-            let err = StyleEntry::parse("margin 5px").expect_err("style declaration should fail");
-            assert_that!(err.reason()).is_equal_to("missing ':' separator");
-        }
-
-        #[test]
-        fn parse_rejects_empty_property() {
-            let err = StyleEntry::parse(": 5px").expect_err("style declaration should fail");
-            assert_that!(err.reason()).is_equal_to("missing property name");
-        }
-
-        #[test]
-        fn parse_rejects_empty_value() {
-            let err = StyleEntry::parse("margin: ;").expect_err("style declaration should fail");
-            assert_that!(err.reason()).is_equal_to("missing property value");
-        }
-    }
-
-    mod normalization {
-        use super::*;
-
-        #[test]
-        fn standard_property_names_are_trimmed_and_lowercased() {
-            let styles = Styles::builder()
-                .with_unchecked(" Color ", "red")
-                .with_unchecked("TOUCH-action", "none")
-                .build();
-
-            assert_that!(styles.to_style_string())
-                .is_equal_to("color:red;touch-action:none;".to_string());
-        }
-
-        #[test]
-        fn custom_properties_preserve_case_after_trimming() {
-            let styles = Styles::new().add_unchecked(" --ThemeAccent ", "tomato");
-            assert_that!(styles.to_style_string()).is_equal_to("--ThemeAccent:tomato;".to_string());
-        }
-
-        #[test]
-        fn unchecked_property_name_conversion_accepts_custom_marker_types() {
-            struct TouchAction;
-
-            impl IntoUncheckedPropertyName for TouchAction {
-                fn into_unchecked_property_name(self) -> UncheckedPropertyName {
-                    "touch-action".into()
-                }
+    /// Visit the current declarations with their rank inside this entry.
+    ///
+    /// A static entry has one declaration, with an empty rank. A nested `Styles` passes on every
+    /// declaration with the rank that it has there, so that a fallback inside the nested `Styles`
+    /// stays below the declarations of the entry's own layer. A reactive entry calls its closure,
+    /// so the current reactive observer subscribes to the signals that the closure reads.
+    pub(crate) fn resolve_each<'a>(
+        &'a self,
+        visit: &mut dyn FnMut(Cow<'a, StyleDeclaration>, &[u16]),
+    ) {
+        match &self.0 {
+            None => {}
+            Some(Source::Static(declaration)) => visit(Cow::Borrowed(declaration), &[]),
+            Some(Source::Reactive(resolve)) => resolve().into_each(&mut |declaration, rank| {
+                visit(Cow::Owned(declaration), rank);
+            }),
+            Some(Source::Nested(styles)) => {
+                styles.resolve_ranked(&mut |declaration, rank| visit(declaration, &rank));
             }
-
-            let styles = Styles::new().add(StyleEntry::always_unchecked(TouchAction, "none"));
-            assert_that!(styles.to_style_string()).is_equal_to("touch-action:none;".to_string());
         }
+    }
+
+    /// Visit the current declarations like [`StyleEntry::resolve_each`], but move them out of
+    /// the entry. A closure returns a new entry on each call, so its declarations move instead
+    /// of being cloned.
+    pub(crate) fn into_each(self, visit: &mut dyn FnMut(StyleDeclaration, &[u16])) {
+        match self.0 {
+            None => {}
+            Some(Source::Static(declaration)) => visit(declaration, &[]),
+            Some(Source::Reactive(resolve)) => resolve().into_each(visit),
+            Some(Source::Nested(styles)) => {
+                styles.into_ranked(&mut |declaration, rank| visit(declaration, &rank));
+            }
+        }
+    }
+
+    /// Return whether the entry never has a declaration.
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
+    pub(crate) fn is_reactive(&self) -> bool {
+        match &self.0 {
+            Some(Source::Reactive(_)) => true,
+            Some(Source::Nested(styles)) => styles.is_reactive(),
+            Some(Source::Static(_)) | None => false,
+        }
+    }
+}
+
+impl From<UncheckedDeclaration> for StyleEntry {
+    fn from(declaration: UncheckedDeclaration) -> Self {
+        Self(Some(Source::Static(StyleDeclaration::Unchecked(
+            declaration,
+        ))))
+    }
+}
+
+impl From<typed_css::Declaration> for StyleEntry {
+    fn from(declaration: typed_css::Declaration) -> Self {
+        Self(Some(Source::Static(StyleDeclaration::Checked(declaration))))
+    }
+}
+
+/// A `Styles` converts into one entry. The declarations of its first layer join the layer of the
+/// entry, and its fallback layers stay below that layer.
+impl From<Styles> for StyleEntry {
+    fn from(styles: Styles) -> Self {
+        if styles.is_empty() {
+            Self::empty()
+        } else {
+            Self(Some(Source::Nested(Box::new(styles))))
+        }
+    }
+}
+
+/// `None` converts into an entry without a declaration.
+impl<D: Into<StyleEntry>> From<Option<D>> for StyleEntry {
+    fn from(declaration: Option<D>) -> Self {
+        declaration.map_or_else(Self::empty, Into::into)
+    }
+}
+
+/// A declaration, a `Styles`, an `Option` of either, or a closure that returns one of them.
+///
+/// [`Styles::with`](crate::Styles::with) and [`StyleEntry::new`] accept these kinds of values:
+///
+/// - A declaration, such as a checked `Declaration` or an [`UncheckedDeclaration`](crate::UncheckedDeclaration).
+///   A [`StyleEntry`] works too.
+/// - A whole `Styles`, such as the styles of a variant of a component. The declarations of its
+///   first layer join the layer of the entry. Its fallback layers stay below that layer and above
+///   the fallback layers of the `Styles` that receives it.
+/// - An `Option` of a declaration or a `Styles`. `None` adds nothing.
+/// - A closure that returns one of the values above. The closure runs again whenever a signal
+///   that it reads changes, so the declarations update reactively. It may return a declaration
+///   of another property each time, or `None` while the declaration is absent.
+///
+/// With the `nightly` feature of Leptos, a signal can be called like a closure. So a signal of a
+/// declaration, or of an `Option` of one, is accepted as a reactive declaration, too.
+///
+/// The type parameter `Marker` only tells these kinds apart. The compiler infers it, so code never
+/// names it.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a style declaration",
+    label = "expected a declaration, a `Styles`, an `Option` of either, or a closure that returns one of them",
+    note = "declare a property from `leptos_styles::css::property`, for example `PADDING.declare(px(16))`",
+    note = "for CSS that `typed-css` does not support, wrap the text in an `UncheckedDeclaration`"
+)]
+pub trait IntoStyleEntry<Marker> {
+    /// Convert this value into a style entry.
+    fn into_style_entry(self) -> StyleEntry;
+}
+
+/// Markers that tell the kinds of [`IntoStyleEntry`] apart. Code never names these types, and the
+/// compiler infers them.
+pub mod marker {
+    use std::marker::PhantomData;
+
+    /// A value that converts into a [`StyleEntry`](super::StyleEntry).
+    pub struct Static;
+
+    /// A closure that returns a value of type `D`, which converts into a
+    /// [`StyleEntry`](super::StyleEntry).
+    pub struct Reactive<D>(PhantomData<D>);
+}
+
+impl<D: Into<StyleEntry>> IntoStyleEntry<marker::Static> for D {
+    fn into_style_entry(self) -> StyleEntry {
+        self.into()
+    }
+}
+
+impl<F, D> IntoStyleEntry<marker::Reactive<D>> for F
+where
+    F: Fn() -> D + Send + Sync + 'static,
+    D: Into<StyleEntry>,
+{
+    fn into_style_entry(self) -> StyleEntry {
+        StyleEntry::reactive(move || self().into())
     }
 }

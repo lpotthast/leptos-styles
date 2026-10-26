@@ -3,370 +3,288 @@ use std::{borrow::Cow, str::FromStr};
 use smallvec::SmallVec;
 
 use crate::{
-    IntoOptionalStyleDeclaration, IntoOptionalUncheckedStyleValue, IntoUncheckedPropertyName,
-    ParseStyleEntryError, StyleEntry, UncheckedStyleValue,
-    convert::reactive_declaration,
+    IntoStyleEntry, InvalidUncheckedDeclaration, StyleEntry, UncheckedDeclaration,
     style_entry::StyleDeclaration,
-    style_list::{StyleList, StylePriority},
 };
 
-/// Leptos component-prop-utility to drill down a list of inline styles.
+/// The inline style of an element, collected from declarations that components pass on and add to.
 ///
-/// # Duplicate Handling
+/// A component takes a `Styles` prop, adds its own declarations with [`Styles::with`], and passes
+/// the result on or renders it with `style=styles`. Each declaration can be static, optional, or
+/// reactive. [`Styles::with_fallback`] adds a whole layer of lower priority, such as the default
+/// styles of a component.
 ///
-/// Duplicate style properties are allowed and will not be deduplicated. In debug builds, a
-/// warning is logged when the same statically-known property is added multiple times at normal
-/// priority. Reactive complete declarations may change property, so their conflicts are resolved
-/// only from the declaration snapshot used for rendering.
+/// The same property may appear more than once. Within one layer, declarations render in the
+/// order they were added, so a later one can enhance an earlier one, as in
+/// `height:100vh;height:100dvh;`.
 ///
-/// The final style string produced by [`Styles::to_style_string`] may contain repeated
-/// properties if duplicates were added.
+/// A clone copies the static declarations and shares the closures.
 ///
-/// # Example
 /// ```rust
 /// use leptos::prelude::*;
-/// use leptos_styles::Styles;
+/// use leptos_styles::{
+///     Styles,
+///     css::{NamedColor, property::{COLOR, DISPLAY, PADDING}, px},
+/// };
 ///
-/// /// The lowest-level component renders the style-list into an actual HTML element.
 /// #[component]
-/// fn NeedingStyles(
-///     #[prop(into, optional)] styles: Styles,
-/// ) -> impl IntoView {
-///     view! {
-///         <div style=styles/>
-///     }
+/// fn Card(#[prop(into, optional)] styles: Styles) -> impl IntoView {
+///     view! { <div style=styles.with(PADDING.declare(px(16)))>"Card"</div> }
 /// }
 ///
-/// /// Components sitting in the middle can add their own styles.
 /// #[component]
-/// fn ExtendingStyles(
-///     #[prop(into, optional)] styles: Styles,
-/// ) -> impl IntoView {
+/// fn Page() -> impl IntoView {
+///     let (highlighted, _set_highlighted) = signal(false);
 ///     view! {
-///         <NeedingStyles styles=styles.add_unchecked("margin", "10px")/>
-///     }
-/// }
-///
-/// /// Root component defines the initial styles using a builder pattern.
-/// #[component]
-/// fn ProvidingStyles() -> impl IntoView {
-///     let (color, _) = signal(Some("blue".to_string()));
-///     view! {
-///         <ExtendingStyles styles=Styles::new().add_unchecked("color", "red")/>
-///         <ExtendingStyles styles=Styles::builder()
-///             .with_unchecked("padding", "10px")
-///             .with_optional_unchecked("color", move || color.get())
-///             .build()
+///         <Card styles=Styles::new()
+///             .with(DISPLAY.grid())
+///             .with(move || highlighted.get().then(|| COLOR.declare(NamedColor::Crimson)))
 ///         />
 ///     }
 /// }
 /// ```
-///
-/// With the `typed-css` cargo feature enabled, the same component pattern accepts complete
-/// checked declarations:
-///
-/// ```rust
-/// # #[cfg(feature = "typed-css")]
-/// # fn _typed_demo() {
-/// use leptos::prelude::*;
-/// use leptos_styles::{Styles, css::{Padding, px}, property::PaddingProperty};
-///
-/// let styles = Styles::builder()
-///     .with(PaddingProperty.declare(Padding::all(px(10))))
-///     .build();
-/// assert_eq!(styles.to_style_string(), "padding:10px;");
-/// # }
-/// ```
 #[derive(Clone, Debug, Default)]
 pub struct Styles {
-    pub(crate) styles: StyleList,
-}
-
-/// Builder for [`Styles`]. Obtain one via [`Styles::builder`] and finish with [`Self::build`].
-#[derive(Clone, Debug, Default)]
-pub struct StylesBuilder {
     styles: StyleList,
 }
 
-impl StylesBuilder {
-    /// Add one complete pre-built declaration to the builder.
-    #[must_use]
-    pub fn with(mut self, declaration: impl Into<StyleEntry>) -> Self {
-        self.styles.push(declaration.into());
-        self
-    }
+/// The priority of a declaration, as the path of layers that leads to it. See
+/// [`Styles::resolve_ranked`].
+pub(crate) type Rank = SmallVec<[u16; 2]>;
 
-    /// Add a conditionally-present complete declaration to the builder.
-    #[must_use]
-    pub fn with_optional<D>(mut self, declaration: impl IntoOptionalStyleDeclaration<D>) -> Self {
-        self.styles
-            .push(declaration.into_optional_declaration_entry());
-        self
+/// Return the rank of a declaration at `inner` inside an entry of `layer`.
+///
+/// Trailing zeros are left out, so that a declaration of the first layer of a nested `Styles` has
+/// the same rank as the declarations next to it.
+fn rank(layer: u16, inner: &[u16]) -> Rank {
+    let mut rank = Rank::new();
+    rank.push(layer);
+    rank.extend_from_slice(inner);
+    while rank.last() == Some(&0) {
+        rank.pop();
     }
+    rank
+}
 
-    /// Add an always-present reactive complete declaration to the builder.
-    ///
-    /// The closure form is portable across stable and nightly Rust. Use [`Self::with_optional`]
-    /// when the declaration can be absent.
-    #[must_use]
-    pub fn with_reactive<D>(mut self, declaration: impl Fn() -> D + Send + Sync + 'static) -> Self
-    where
-        D: Into<StyleEntry>,
-    {
-        self.styles.push(reactive_declaration(declaration));
-        self
-    }
+/// The entries of a `Styles` with the priority layer of each.
+///
+/// Layer 0 holds the entries added with `with`. Each fallback adds layers with higher numbers,
+/// which have lower priority. Most elements have at most four entries, so they are stored inline.
+#[derive(Clone, Debug, Default)]
+struct StyleList {
+    entries: SmallVec<[(StyleEntry, u16); 4]>,
+    deepest_layer: u16,
+    has_reactive: bool,
+}
 
-    /// Add one always-present unchecked property/value pair.
-    #[must_use]
-    pub fn with_unchecked(
-        mut self,
-        property: impl IntoUncheckedPropertyName,
-        value: impl Into<UncheckedStyleValue>,
-    ) -> Self {
-        self.styles
-            .push(StyleEntry::always_unchecked(property, value));
-        self
-    }
-
-    /// Add one conditionally-present unchecked property/value pair.
-    #[must_use]
-    pub fn with_optional_unchecked<V>(
-        mut self,
-        property: impl IntoUncheckedPropertyName,
-        value: impl IntoOptionalUncheckedStyleValue<V>,
-    ) -> Self {
-        self.styles
-            .push(value.into_optional_unchecked_entry(property.into_unchecked_property_name()));
-        self
-    }
-
-    /// Add multiple complete pre-built declarations to the builder.
-    #[must_use]
-    pub fn with_declarations<D: Into<StyleEntry>>(
-        mut self,
-        iter: impl IntoIterator<Item = D>,
-    ) -> Self {
-        for declaration in iter {
-            self.styles.push(declaration.into());
+impl StyleList {
+    /// Add an entry. An entry that never has a declaration is dropped.
+    fn push(&mut self, entry: StyleEntry, layer: u16) {
+        if entry.is_empty() {
+            return;
         }
-        self
+        self.has_reactive |= entry.is_reactive();
+        self.deepest_layer = self.deepest_layer.max(layer);
+        self.entries.push((entry, layer));
     }
 
-    /// Build the style container.
-    #[must_use]
-    pub fn build(self) -> Styles {
-        Styles {
-            styles: self.styles,
-        }
+    /// Return the first layer below every layer in the list. It is below layer 0 even for an
+    /// empty list, so that entries added later with `with` keep the higher priority.
+    const fn next_fallback_layer(&self) -> u16 {
+        self.deepest_layer.saturating_add(1)
     }
 }
 
 impl Styles {
-    /// Create an empty style container.
+    /// Create an empty style.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            styles: StyleList::default(),
-        }
+        Self::default()
     }
 
-    /// Create a builder for [`Styles`].
-    #[must_use]
-    pub fn builder() -> StylesBuilder {
-        StylesBuilder::default()
-    }
-
-    /// Add one complete pre-built declaration to this style-list.
-    #[must_use]
-    #[allow(clippy::should_implement_trait)]
-    pub fn add(mut self, declaration: impl Into<StyleEntry>) -> Self {
-        self.styles.push(declaration.into());
-        self
-    }
-
-    /// Add one conditionally-present complete declaration to this style-list.
-    #[must_use]
-    pub fn add_optional<D>(mut self, declaration: impl IntoOptionalStyleDeclaration<D>) -> Self {
-        self.styles
-            .push(declaration.into_optional_declaration_entry());
-        self
-    }
-
-    /// Add an always-present reactive complete declaration to this style-list.
+    /// Add a declaration, a `Styles`, an `Option` of either, or a closure that returns one of
+    /// them.
     ///
-    /// The closure form is portable across stable and nightly Rust. Use [`Self::add_optional`]
-    /// when the declaration can be absent.
+    /// A closure runs again whenever a signal that it reads changes, so the declaration updates
+    /// reactively. The first layer of an added `Styles` joins the declarations of `self`, and its
+    /// fallback layers stay above the fallback layers of `self`. [`IntoStyleEntry`] describes all
+    /// accepted values.
+    ///
+    /// ```rust
+    /// use leptos::prelude::*;
+    /// use leptos_styles::{
+    ///     Styles,
+    ///     css::{NamedColor, pct, property::{COLOR, DISPLAY, GAP, WIDTH}, px},
+    /// };
+    ///
+    /// let (color, set_color) = signal(NamedColor::Red);
+    /// let (wide, _set_wide) = signal(false);
+    /// let styles = Styles::new()
+    ///     .with(DISPLAY.grid())
+    ///     .with(Some(GAP.declare(px(8))))
+    ///     .with(move || COLOR.declare(color.get()))
+    ///     .with(move || wide.get().then(|| WIDTH.declare(pct(100))));
+    ///
+    /// assert_eq!(styles.to_style_string(), "display:grid;gap:8px;color:red;");
+    /// set_color.set(NamedColor::Blue);
+    /// assert_eq!(styles.to_style_string(), "display:grid;gap:8px;color:blue;");
+    ///
+    /// let card = Styles::new().with(styles).with(WIDTH.declare(pct(50)));
+    /// assert_eq!(card.to_style_string(), "display:grid;gap:8px;color:blue;width:50%;");
+    /// ```
     #[must_use]
-    pub fn add_reactive<D>(mut self, declaration: impl Fn() -> D + Send + Sync + 'static) -> Self
-    where
-        D: Into<StyleEntry>,
-    {
-        self.styles.push(reactive_declaration(declaration));
+    pub fn with<M>(mut self, source: impl IntoStyleEntry<M>) -> Self {
+        self.styles.push(source.into_style_entry(), 0);
         self
     }
 
-    /// Add one always-present unchecked property/value pair.
+    /// Add several declarations, `Styles`, `Option`s, or closures of the same kind.
+    ///
+    /// To combine different kinds in one list, convert each into a [`StyleEntry`] first.
     #[must_use]
-    pub fn add_unchecked(
+    pub fn with_all<M, S: IntoStyleEntry<M>>(
         mut self,
-        property: impl IntoUncheckedPropertyName,
-        value: impl Into<UncheckedStyleValue>,
+        sources: impl IntoIterator<Item = S>,
     ) -> Self {
-        self.styles
-            .push(StyleEntry::always_unchecked(property, value));
-        self
-    }
-
-    /// Add one conditionally-present unchecked property/value pair.
-    #[must_use]
-    pub fn add_optional_unchecked<V>(
-        mut self,
-        property: impl IntoUncheckedPropertyName,
-        value: impl IntoOptionalUncheckedStyleValue<V>,
-    ) -> Self {
-        self.styles
-            .push(value.into_optional_unchecked_entry(property.into_unchecked_property_name()));
-        self
-    }
-
-    /// Add multiple complete declarations to this style-list.
-    #[must_use]
-    pub fn add_declarations<D: Into<StyleEntry>>(
-        mut self,
-        iter: impl IntoIterator<Item = D>,
-    ) -> Self {
-        for declaration in iter {
-            self.styles.push(declaration.into());
+        for source in sources {
+            self.styles.push(source.into_style_entry(), 0);
         }
         self
     }
 
-    /// Parses a raw CSS string containing one or more `property: value;` declarations.
+    /// Add `fallback` as a layer of lower priority than every declaration in `self`.
     ///
-    /// Empty declarations between semicolons are skipped. Each non-empty declaration must
-    /// be a valid `property: value` pair; otherwise a [`ParseStyleEntryError`] is returned
-    /// and no partial state is retained.
+    /// A declaration of the fallback layer renders only while no declaration of a higher layer has
+    /// the same property. Because a reactive declaration can change or disappear, the browser
+    /// output follows the current values. The order and the layers inside `fallback` are kept.
     ///
-    /// This is intended as an escape hatch for copy-pasted CSS. Prefer checked property selectors
-    /// with [`Styles::builder`] when authoring supported styles, or the explicit `_unchecked`
-    /// methods when deliberately using unsupported CSS.
+    /// Layers of lower priority render first. A shorthand in the fallback, such as `padding`,
+    /// therefore never overrides a longhand in `self`, such as `padding-top`.
+    ///
+    /// ```
+    /// use leptos_styles::{Styles, css::{NamedColor, property::{COLOR, PADDING}, px}};
+    ///
+    /// let user = Styles::new().with(COLOR.declare(NamedColor::Red));
+    /// let theme = Styles::new()
+    ///     .with(COLOR.declare(NamedColor::Blue))
+    ///     .with(PADDING.declare(px(8)));
+    ///
+    /// // The user's color wins, and the theme's padding fills the gap.
+    /// assert_eq!(user.with_fallback(theme).to_style_string(), "padding:8px;color:red;");
+    /// ```
+    #[must_use]
+    pub fn with_fallback(mut self, fallback: impl Into<Self>) -> Self {
+        let first_layer = self.styles.next_fallback_layer();
+        for (entry, layer) in fallback.into().styles.entries {
+            self.styles.push(entry, first_layer.saturating_add(layer));
+        }
+        self
+    }
+
+    /// Parse CSS declarations such as `color: red; padding: 8px`.
+    ///
+    /// The parser checks each declaration like an [`UncheckedDeclaration`] and skips empty
+    /// declarations. A `;` inside a string, `url()`, or a block does not end a declaration. Use
+    /// this parser for CSS copied from elsewhere, and prefer checked properties for CSS that
+    /// `typed-css` supports.
     ///
     /// # Errors
     ///
-    /// Returns the first [`ParseStyleEntryError`] encountered while parsing declarations.
-    ///
-    /// # Example
+    /// Returns an error for the first invalid declaration. The parser then returns no `Styles`.
     ///
     /// ```
     /// use leptos_styles::Styles;
     ///
-    /// let styles = Styles::parse_css("color: red; padding: 8px;").unwrap();
+    /// let styles = Styles::parse("color: red; padding: 8px;").unwrap();
     /// assert_eq!(styles.to_style_string(), "color:red;padding:8px;");
     /// ```
-    pub fn parse_css(css: &str) -> Result<Self, ParseStyleEntryError> {
-        let mut styles = Self::new();
-        for piece in css.split(';') {
-            if piece.trim().is_empty() {
-                continue;
-            }
-            styles.styles.push(StyleEntry::parse(piece)?);
-        }
-        Ok(styles)
+    pub fn parse(css: &str) -> Result<Self, InvalidUncheckedDeclaration> {
+        Ok(Self::new().with_all(UncheckedDeclaration::parse_list(css)?))
     }
 
-    /// Merge `other` (lower-priority) styles into `self` (higher-priority).
+    /// Read every entry once and visit each declaration with its rank.
     ///
-    /// Entries from `other` are assigned a lower-priority fallback group while retaining their
-    /// order and any existing fallback relationships. Property conflicts are decided after every
-    /// reactive entry has resolved to one complete declaration snapshot. This allows either layer
-    /// to change property safely: a lower-priority declaration renders whenever no present
-    /// higher-priority declaration currently resolves to the same property.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use leptos_styles::Styles;
-    ///
-    /// let user = Styles::builder().with_unchecked("color", "red").build();
-    /// let theme = Styles::builder()
-    ///     .with_unchecked("color", "blue")
-    ///     .with_unchecked("padding", "8px")
-    ///     .build();
-    ///
-    /// // `user` wins on color; `theme.padding` flows through unchanged.
-    /// let merged = user.merge(theme).to_style_string();
-    /// assert!(merged.contains("color:red"));
-    /// assert!(merged.contains("padding:8px"));
-    /// assert!(!merged.contains("color:blue"));
-    /// ```
-    #[must_use]
-    pub fn merge(mut self, other: Self) -> Self {
-        let fallback_group = self.styles.next_fallback_group();
-
-        for entry in other.styles.into_entries() {
-            let group = match entry.priority {
-                StylePriority::Normal => fallback_group,
-                StylePriority::Fallback(group) => fallback_group.saturating_add(group),
-            };
-            self.styles.push_fallback(entry.style, group);
+    /// A rank is the path of layers from this `Styles` down to the declaration, which only has
+    /// more than one step inside a nested `Styles`. A smaller rank has a higher priority.
+    pub(crate) fn resolve_ranked<'a>(
+        &'a self,
+        visit: &mut dyn FnMut(Cow<'a, StyleDeclaration>, Rank),
+    ) {
+        for (entry, layer) in &self.styles.entries {
+            entry.resolve_each(&mut |declaration, inner| visit(declaration, rank(*layer, inner)));
         }
-        self
     }
 
-    /// Appends all defined styles to the given string buffer.
-    ///
-    /// Entries with `None` values are excluded from the output.
-    ///
-    /// For each property, the lowest-numbered priority group that currently resolves to
-    /// `Some(_)` wins; entries at that group render in their original push order, while
-    /// entries at higher (less-priority) groups for the same property are skipped. This
-    /// covers chained-merge fallback chains as well as the case where a later `Normal`
-    /// entry is added on top of a `Fallback` chain for the same property.
-    ///
-    /// The internal declaration snapshot and winning-property list remain inline for up to four
-    /// present entries/properties. Larger containers spill those small vectors to the heap.
-    pub fn write_style_string(&self, buf: &mut String) {
-        let resolved: SmallVec<[(Cow<'_, StyleDeclaration>, StylePriority); 4]> = self
-            .styles
-            .iter_entries()
-            .filter_map(|(entry, priority)| {
-                entry.resolve().map(|declaration| (declaration, priority))
-            })
-            .collect();
-        let mut winning = SmallVec::<[(&str, u16); 4]>::new();
+    /// Visit each declaration with its rank like [`Styles::resolve_ranked`], but move the
+    /// declarations out of this `Styles`.
+    pub(crate) fn into_ranked(self, visit: &mut dyn FnMut(StyleDeclaration, Rank)) {
+        for (entry, layer) in self.styles.entries {
+            entry.into_each(&mut |declaration, inner| visit(declaration, rank(layer, inner)));
+        }
+    }
 
-        for (declaration, priority) in &resolved {
+    /// Read every entry once and pass the declarations that win their property to `f`.
+    ///
+    /// For each property, the declarations with the highest priority win. The winning
+    /// declarations are ordered from the lowest priority to the highest, and in the order they
+    /// were added within one priority.
+    pub(crate) fn with_winning<R>(&self, f: impl FnOnce(&[&StyleDeclaration]) -> R) -> R {
+        let mut resolved: SmallVec<[(Cow<'_, StyleDeclaration>, Rank); 4]> = SmallVec::new();
+        self.resolve_ranked(&mut |declaration, rank| resolved.push((declaration, rank)));
+
+        // With one priority, every declaration wins.
+        if resolved.iter().all(|(_, rank)| rank.is_empty()) {
+            let winners: SmallVec<[&StyleDeclaration; 4]> = resolved
+                .iter()
+                .map(|(declaration, _)| declaration.as_ref())
+                .collect();
+            return f(&winners);
+        }
+
+        let mut winning = SmallVec::<[(&str, &Rank); 4]>::new();
+        for (declaration, rank) in &resolved {
             let property = declaration.property_name();
-            let group = priority.group();
             match winning
                 .iter_mut()
                 .find(|(candidate, _)| *candidate == property)
             {
-                Some((_, current)) if group < *current => *current = group,
-                Some(_) => {}
-                None => winning.push((property, group)),
+                Some((_, current)) => *current = (*current).min(rank),
+                None => winning.push((property, rank)),
             }
         }
-
-        for (declaration, priority) in &resolved {
-            let property = declaration.property_name();
-            let group = priority.group();
-            if winning
-                .iter()
-                .any(|(candidate, winning_group)| *candidate == property && *winning_group == group)
-            {
-                declaration.write_to(buf);
-            }
-        }
+        let mut winners: SmallVec<[(&StyleDeclaration, &Rank); 4]> = resolved
+            .iter()
+            .filter(|(declaration, rank)| {
+                winning.iter().any(|(property, winning_rank)| {
+                    *property == declaration.property_name() && *winning_rank == rank
+                })
+            })
+            .map(|(declaration, rank)| (declaration.as_ref(), rank))
+            .collect();
+        winners.sort_by(|(_, a), (_, b)| b.cmp(a));
+        let winners: SmallVec<[&StyleDeclaration; 4]> = winners
+            .into_iter()
+            .map(|(declaration, _)| declaration)
+            .collect();
+        f(&winners)
     }
 
-    /// Reactively combines all defined styles into one semicolon-separated String.
+    /// Append the current declarations to `buf` as `property:value;` pairs.
     ///
-    /// Entries with `None` values are excluded from the output.
+    /// Absent declarations and declarations hidden by a layer of higher priority are left out.
+    /// Reading a reactive declaration subscribes the current reactive observer.
+    pub(crate) fn write_style_string(&self, buf: &mut String) {
+        self.with_winning(|winners| {
+            for declaration in winners {
+                declaration.write_to(buf);
+            }
+        });
+    }
+
+    /// Return the current declarations as `property:value;` pairs.
     ///
-    /// Note: Prefer using `style=styles` directly (via `IntoStyle`) for better performance,
-    /// as it reuses the string buffer across reactive updates.
+    /// Reading a reactive declaration subscribes the current reactive observer. To render an
+    /// element, write `style=styles` instead, which updates only what changed.
     #[must_use]
     pub fn to_style_string(&self) -> String {
         let mut s = String::new();
@@ -374,110 +292,236 @@ impl Styles {
         s
     }
 
-    pub(crate) fn touch_reactive_dependencies(&self) {
-        self.styles.touch_reactive_dependencies();
+    /// Return whether any declaration is reactive. A style without reactive declarations
+    /// renders once and never subscribes to signals.
+    pub(crate) const fn is_reactive(&self) -> bool {
+        self.styles.has_reactive
     }
 
-    /// Returns `true` if any style entry in this container resolves through a reactive signal.
-    ///
-    /// When this returns `false`, the container can be rendered as a static `style` attribute
-    /// without subscribing to the reactive graph.
-    #[must_use]
-    pub fn is_reactive(&self) -> bool {
-        self.styles.is_reactive()
+    /// Return whether no entry can ever have a declaration.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.styles.entries.is_empty()
     }
 }
 
 impl FromStr for Styles {
-    type Err = ParseStyleEntryError;
+    type Err = InvalidUncheckedDeclaration;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse_css(s)
+        Self::parse(s)
     }
 }
 
-impl TryFrom<&str> for Styles {
-    type Error = ParseStyleEntryError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        Self::parse_css(value)
+/// A single declaration converts into `Styles`, so a `#[prop(into)] styles: Styles` prop accepts
+/// `styles=PADDING.declare(px(16))`.
+impl From<typed_css::Declaration> for Styles {
+    fn from(declaration: typed_css::Declaration) -> Self {
+        Self::new().with(declaration)
     }
 }
 
-impl TryFrom<String> for Styles {
-    type Error = ParseStyleEntryError;
+/// A single unchecked declaration converts into `Styles`.
+impl From<UncheckedDeclaration> for Styles {
+    fn from(declaration: UncheckedDeclaration) -> Self {
+        Self::new().with(declaration)
+    }
+}
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse_css(&value)
+/// A [`StyleEntry`] converts into `Styles`, so a prop also accepts a closure wrapped in
+/// [`StyleEntry::new`].
+impl From<StyleEntry> for Styles {
+    fn from(entry: StyleEntry) -> Self {
+        Self::new().with(entry)
+    }
+}
+
+/// An `Option` converts into `Styles`. `None` converts into an empty `Styles`.
+impl<T> From<Option<T>> for Styles
+where
+    T: Into<StyleEntry>,
+{
+    fn from(entry: Option<T>) -> Self {
+        Self::new().with(entry)
+    }
+}
+
+/// An array of declarations, `Styles`, entries, or `Option`s of them converts into `Styles`.
+impl<T, const N: usize> From<[T; N]> for Styles
+where
+    T: Into<StyleEntry>,
+{
+    fn from(entries: [T; N]) -> Self {
+        entries.into_iter().collect()
+    }
+}
+
+impl<T> FromIterator<T> for Styles
+where
+    T: Into<StyleEntry>,
+{
+    fn from_iter<I: IntoIterator<Item = T>>(entries: I) -> Self {
+        let mut styles = Self::new();
+        styles.extend(entries);
+        styles
+    }
+}
+
+impl<T> Extend<T> for Styles
+where
+    T: Into<StyleEntry>,
+{
+    fn extend<I: IntoIterator<Item = T>>(&mut self, entries: I) {
+        for entry in entries {
+            self.styles.push(entry.into(), 0);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
     use assertr::prelude::*;
 
-    use crate::Styles;
+    use crate::{InvalidUncheckedReason, StyleEntry, Styles, UncheckedDeclaration};
+
+    fn toggled(
+        flag: &Arc<AtomicBool>,
+        value: &'static str,
+    ) -> impl Fn() -> Option<UncheckedDeclaration> + Send + Sync + 'static {
+        let flag = Arc::clone(flag);
+        move || {
+            flag.load(Ordering::Relaxed)
+                .then(|| UncheckedDeclaration::new("color", value))
+        }
+    }
 
     mod construction {
         use super::*;
 
         #[test]
         fn new_renders_nothing() {
-            let styles = Styles::new();
-            assert_that!(styles.to_style_string()).is_equal_to(String::new());
+            assert_that!(Styles::new().to_style_string()).is_equal_to("");
         }
 
         #[test]
-        fn add_chains_in_insertion_order() {
+        fn declarations_render_in_insertion_order() {
             let styles = Styles::new()
-                .add_unchecked("color", "green")
-                .add_unchecked("font-size", "14px");
+                .with(UncheckedDeclaration::new("color", "green"))
+                .with(UncheckedDeclaration::new("font-size", "14px"))
+                .with_all([UncheckedDeclaration::new("display", "grid")]);
             assert_that!(styles.to_style_string())
-                .is_equal_to("color:green;font-size:14px;".to_string());
+                .is_equal_to("color:green;font-size:14px;display:grid;");
         }
 
         #[test]
-        fn builder_chains_in_insertion_order() {
-            let styles = Styles::builder()
-                .with_unchecked("margin", "10px")
-                .with_unchecked("display", "flex")
-                .build();
-            assert_that!(styles.to_style_string())
-                .is_equal_to("margin:10px;display:flex;".to_string());
-        }
-
-        #[test]
-        fn add_declarations_extends_with_iterator() {
+        fn optional_declarations_skip_none() {
             let styles = Styles::new()
-                .add_unchecked("display", "grid")
-                .add_declarations([
-                    crate::StyleEntry::always_unchecked("color", "blue"),
-                    crate::StyleEntry::always_unchecked("padding", "20px"),
-                ]);
-
-            assert_that!(styles.to_style_string())
-                .is_equal_to("display:grid;color:blue;padding:20px;".to_string());
+                .with(UncheckedDeclaration::new("color", "red"))
+                .with(None::<UncheckedDeclaration>)
+                .with(Some(UncheckedDeclaration::new("margin", "10px")));
+            assert_that!(styles.to_style_string()).is_equal_to("color:red;margin:10px;");
         }
 
         #[test]
-        fn mixed_static_and_optional_skips_none_entries() {
-            let styles = Styles::builder()
-                .with_unchecked("color", "red")
-                .with_optional_unchecked("padding", None::<&str>)
-                .with_unchecked("margin", "10px")
-                .build();
-            assert_that!(styles.to_style_string())
-                .is_equal_to("color:red;margin:10px;".to_string());
+        fn duplicates_render_in_order() {
+            let styles = Styles::new()
+                .with(UncheckedDeclaration::new("height", "100vh"))
+                .with(UncheckedDeclaration::new("height", "100dvh"));
+            assert_that!(styles.to_style_string()).is_equal_to("height:100vh;height:100dvh;");
         }
 
         #[test]
-        fn chained_adds_drill_through_layers() {
-            let initial = Styles::new().add_unchecked("color", "red");
-            let extended = initial.add_unchecked("margin", "5px");
-            let drilled = extended.add_unchecked("padding", "10px");
+        fn options_convert_into_styles() {
+            let collected: Styles = [Some(UncheckedDeclaration::new("color", "red")), None]
+                .into_iter()
+                .collect();
+            let converted: Styles = Some(UncheckedDeclaration::new("gap", "4px")).into();
+            let absent: Styles = None::<UncheckedDeclaration>.into();
+            assert_that!(collected.to_style_string()).is_equal_to("color:red;");
+            assert_that!(converted.to_style_string()).is_equal_to("gap:4px;");
+            assert_that!(absent.styles.entries.len()).is_equal_to(0);
+        }
 
-            assert_that!(drilled.to_style_string())
-                .is_equal_to("color:red;margin:5px;padding:10px;".to_string());
+        #[test]
+        fn nested_styles_keep_their_fallbacks_above_the_fallbacks_of_self() {
+            let base = || {
+                Styles::new()
+                    .with(UncheckedDeclaration::new("color", "red"))
+                    .with_fallback(UncheckedDeclaration::new("margin", "1px"))
+            };
+            let extra = || {
+                Styles::new()
+                    .with(UncheckedDeclaration::new("color", "blue"))
+                    .with_fallback(UncheckedDeclaration::new("margin", "2px"))
+            };
+            assert_that!(base().with(extra()).to_style_string())
+                .is_equal_to("margin:2px;color:red;color:blue;");
+
+            // A nested `Styles` behaves like a closure that returns it.
+            assert_that!(base().with(extra).to_style_string())
+                .is_equal_to("margin:2px;color:red;color:blue;");
+        }
+
+        #[test]
+        fn nesting_does_not_depend_on_the_order_of_calls() {
+            let nested = || {
+                Styles::new()
+                    .with(UncheckedDeclaration::new("gap", "2px"))
+                    .with_fallback(UncheckedDeclaration::new("margin", "2px"))
+            };
+            let fallback = || UncheckedDeclaration::new("margin", "9px");
+            let first = Styles::new().with_fallback(fallback()).with(nested());
+            let second = Styles::new().with(nested()).with_fallback(fallback());
+            assert_that!(first.to_style_string()).is_equal_to("margin:2px;gap:2px;");
+            assert_that!(second.to_style_string()).is_equal_to("margin:2px;gap:2px;");
+        }
+
+        #[test]
+        fn empty_and_absent_styles_are_not_stored() {
+            let styles = Styles::new()
+                .with(Styles::new())
+                .with(None::<Styles>)
+                .with(Some(
+                    Styles::new().with(UncheckedDeclaration::new("gap", "1px")),
+                ));
+            assert_that!(styles.styles.entries.len()).is_equal_to(1);
+            assert_that!(styles.is_reactive()).is_false();
+            assert_that!(styles.to_style_string()).is_equal_to("gap:1px;");
+        }
+
+        #[test]
+        fn absent_static_declarations_are_not_stored() {
+            let styles = Styles::new().with(None::<UncheckedDeclaration>);
+            assert_that!(styles.styles.entries.len()).is_equal_to(0);
+        }
+
+        #[test]
+        fn declarations_collect_into_styles() {
+            let mut styles: Styles = ["grid", "flex"]
+                .into_iter()
+                .map(|display| UncheckedDeclaration::new("display", display))
+                .collect();
+            styles.extend([StyleEntry::new(Some(UncheckedDeclaration::new(
+                "gap", "4px",
+            )))]);
+            assert_that!(styles.to_style_string())
+                .is_equal_to("display:grid;display:flex;gap:4px;");
+        }
+
+        #[test]
+        fn single_declarations_and_arrays_convert_into_styles() {
+            let single: Styles = UncheckedDeclaration::new("color", "red").into();
+            let array: Styles = [
+                StyleEntry::new(UncheckedDeclaration::new("color", "blue")),
+                StyleEntry::new(Some(UncheckedDeclaration::new("padding", "20px"))),
+            ]
+            .into();
+            assert_that!(single.to_style_string()).is_equal_to("color:red;");
+            assert_that!(array.to_style_string()).is_equal_to("color:blue;padding:20px;");
         }
     }
 
@@ -485,356 +529,226 @@ mod tests {
         use super::*;
 
         #[test]
-        fn parse_css_single_declaration() {
-            let styles = Styles::parse_css("color: red").expect("css should parse");
-            assert_that!(styles.to_style_string()).is_equal_to("color:red;".to_string());
+        fn parse_skips_empty_declarations() {
+            let styles = Styles::parse(";;color: red;;padding: 1rem;;").unwrap();
+            assert_that!(styles.to_style_string()).is_equal_to("color:red;padding:1rem;");
         }
 
         #[test]
-        fn parse_css_multiple_declarations() {
-            let styles = Styles::parse_css("color: red; padding: 1rem; margin: 0")
-                .expect("css should parse");
+        fn parse_keeps_semicolons_inside_urls() {
+            let styles: Styles = "background: url(data:image/png;base64,AA) no-repeat"
+                .parse()
+                .unwrap();
             assert_that!(styles.to_style_string())
-                .is_equal_to("color:red;padding:1rem;margin:0;".to_string());
+                .is_equal_to("background:url(data:image/png;base64,AA) no-repeat;");
         }
 
         #[test]
-        fn parse_css_skips_empty_declarations() {
-            let styles =
-                Styles::parse_css(";;color: red;;padding: 1rem;;").expect("css should parse");
-            assert_that!(styles.to_style_string())
-                .is_equal_to("color:red;padding:1rem;".to_string());
-        }
-
-        #[test]
-        fn parse_css_empty_input_yields_empty_styles() {
-            let styles = Styles::parse_css("   ; ;  ").expect("css should parse");
-            assert_that!(styles.to_style_string()).is_equal_to(String::new());
-        }
-
-        #[test]
-        fn parse_css_propagates_declaration_error() {
-            let err = Styles::parse_css("color: red; invalid").expect_err("css should fail");
-            assert_that!(err.reason()).is_equal_to("missing ':' separator");
-        }
-
-        #[test]
-        fn parse_css_via_try_from_str() {
-            let styles: Styles = "color: blue; padding: 4px"
-                .try_into()
-                .expect("css should parse");
-            assert_that!(styles.to_style_string())
-                .is_equal_to("color:blue;padding:4px;".to_string());
-        }
-
-        #[test]
-        fn parse_css_via_from_str() {
-            let styles: Styles = "color: green".parse().expect("css should parse");
-            assert_that!(styles.to_style_string()).is_equal_to("color:green;".to_string());
+        fn parse_propagates_declaration_errors() {
+            let error = Styles::parse("color: red; invalid").unwrap_err();
+            assert_that!(error.declaration()).is_equal_to("invalid");
+            assert_that!(error.reason()).is_equal_to(InvalidUncheckedReason::MissingSeparator);
         }
     }
 
-    mod merge {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
+    mod fallback {
         use super::*;
 
         #[test]
-        fn merge_treats_property_names_case_insensitively() {
-            let hook_styles = Styles::new().add_unchecked("touch-action", "none");
-            let user_styles = Styles::new().add_unchecked("Touch-Action", "auto");
-
-            assert_that!(hook_styles.merge(user_styles).to_style_string())
-                .is_equal_to("touch-action:none;".to_string());
+        fn fallback_property_names_are_normalized_before_comparison() {
+            let styles = Styles::new()
+                .with(UncheckedDeclaration::new("touch-action", "none"))
+                .with_fallback(
+                    Styles::new().with(UncheckedDeclaration::new("Touch-Action", "auto")),
+                );
+            assert_that!(styles.to_style_string()).is_equal_to("touch-action:none;");
         }
 
         #[test]
-        fn merge_allows_static_none_fallback() {
-            let hook_styles = Styles::new().add_optional_unchecked("color", None::<&str>);
-            let user_styles = Styles::new().add_unchecked("Color", "gray");
+        fn reactive_higher_layer_toggles_the_fallback() {
+            let flag = Arc::new(AtomicBool::new(true));
+            let styles = Styles::new()
+                .with(toggled(&flag, "orange"))
+                .with_fallback(Styles::new().with(UncheckedDeclaration::new("color", "gray")));
 
-            assert_that!(hook_styles.merge(user_styles).to_style_string())
-                .is_equal_to("color:gray;".to_string());
+            assert_that!(styles.to_style_string()).is_equal_to("color:orange;");
+            flag.store(false, Ordering::Relaxed);
+            assert_that!(styles.to_style_string()).is_equal_to("color:gray;");
+            flag.store(true, Ordering::Relaxed);
+            assert_that!(styles.to_style_string()).is_equal_to("color:orange;");
         }
 
         #[test]
-        fn merge_reactive_optional_fallback_toggles() {
-            let use_hook_color = Arc::new(AtomicBool::new(true));
-            let use_hook_color_for_style = Arc::clone(&use_hook_color);
-            let hook_styles = Styles::new().add_optional_unchecked("color", move || {
-                if use_hook_color_for_style.load(Ordering::Relaxed) {
-                    Some("orange")
-                } else {
-                    None
-                }
-            });
-            let user_styles = Styles::new().add_unchecked("Color", "gray");
-            let styles = hook_styles.merge(user_styles);
+        fn same_layer_duplicates_render_together_above_the_fallback() {
+            let flag = Arc::new(AtomicBool::new(true));
+            let styles = Styles::new()
+                .with(toggled(&flag, "orange"))
+                .with(UncheckedDeclaration::new("color", "red"))
+                .with_fallback(Styles::new().with(UncheckedDeclaration::new("color", "gray")));
 
-            assert_that!(styles.to_style_string()).is_equal_to("color:orange;".to_string());
-
-            use_hook_color.store(false, Ordering::Relaxed);
-            assert_that!(styles.to_style_string()).is_equal_to("color:gray;".to_string());
-
-            use_hook_color.store(true, Ordering::Relaxed);
-            assert_that!(styles.to_style_string()).is_equal_to("color:orange;".to_string());
+            assert_that!(styles.to_style_string()).is_equal_to("color:orange;color:red;");
+            flag.store(false, Ordering::Relaxed);
+            assert_that!(styles.to_style_string()).is_equal_to("color:red;");
         }
 
         #[test]
-        fn merge_preserves_normal_duplicate_last_wins_with_fallback() {
-            let use_hook_color = Arc::new(AtomicBool::new(true));
-            let use_hook_color_for_style = Arc::clone(&use_hook_color);
-            let hook_styles = Styles::new()
-                .add_optional_unchecked("color", move || {
-                    if use_hook_color_for_style.load(Ordering::Relaxed) {
-                        Some("orange")
-                    } else {
-                        None
-                    }
-                })
-                .add_unchecked("color", "red");
-            let user_styles = Styles::new().add_unchecked("Color", "gray");
-            let styles = hook_styles.merge(user_styles);
-
+        fn lower_layers_render_first() {
+            let styles = Styles::new()
+                .with(UncheckedDeclaration::new("padding-top", "0"))
+                .with_fallback(Styles::new().with(UncheckedDeclaration::new("padding", "8px")))
+                .with_fallback(Styles::new().with(UncheckedDeclaration::new("margin", "4px")));
             assert_that!(styles.to_style_string())
-                .is_equal_to("color:orange;color:red;".to_string());
-
-            use_hook_color.store(false, Ordering::Relaxed);
-            assert_that!(styles.to_style_string()).is_equal_to("color:red;".to_string());
+                .is_equal_to("margin:4px;padding:8px;padding-top:0;");
         }
 
         #[test]
-        fn merge_same_batch_fallback_duplicates_preserve_order() {
-            let hook_styles = Styles::new().add_optional_unchecked("color", None::<&str>);
-            let user_styles = Styles::new()
-                .add_unchecked("Color", "gray")
-                .add_unchecked("Color", "blue");
-
-            assert_that!(hook_styles.merge(user_styles).to_style_string())
-                .is_equal_to("color:gray;color:blue;".to_string());
+        fn chained_fallbacks_keep_their_order() {
+            let styles = Styles::new()
+                .with(None::<UncheckedDeclaration>)
+                .with_fallback(Styles::new().with(UncheckedDeclaration::new("color", "gray")))
+                .with_fallback(Styles::new().with(UncheckedDeclaration::new("color", "blue")));
+            assert_that!(styles.to_style_string()).is_equal_to("color:gray;");
         }
 
         #[test]
-        fn merge_lower_batch_fallback_does_not_override_higher_batch_fallback() {
-            let hook_styles = Styles::new().add_optional_unchecked("color", None::<&str>);
-            let user_styles = Styles::new().add_unchecked("Color", "gray");
-            let theme_styles = Styles::new().add_unchecked("Color", "blue");
-
-            assert_that!(
-                hook_styles
-                    .merge(user_styles)
-                    .merge(theme_styles)
-                    .to_style_string()
-            )
-            .is_equal_to("color:gray;".to_string());
+        fn later_normal_entries_shadow_an_earlier_fallback() {
+            let styles = Styles::new()
+                .with_fallback(Styles::new().with(UncheckedDeclaration::new("color", "fallback")))
+                .with(UncheckedDeclaration::new("color", "user"));
+            assert_that!(styles.to_style_string()).is_equal_to("color:user;");
         }
 
         #[test]
-        fn merge_static_some_suppresses_fallback() {
-            let hook_styles = Styles::new().add_unchecked("color", "orange");
-            let user_styles = Styles::new().add_unchecked("Color", "gray");
-
-            assert_that!(hook_styles.merge(user_styles).to_style_string())
-                .is_equal_to("color:orange;".to_string());
-        }
-
-        #[test]
-        fn normal_added_after_merge_fallback_overrides_fallback() {
-            // Pushing a `Normal` for the same property after a fallback chain has been merged
-            // in must shadow that fallback chain rather than render alongside it. The duplicate
-            // push triggers the debug-build warning in `StyleList::push`, which is the intended
-            // surface for this kind of conflict.
-            let hook_styles = Styles::new().add_optional_unchecked("color", None::<&str>);
-            let merged = hook_styles
-                .merge(Styles::new().add_unchecked("color", "fallback"))
-                .add_unchecked("color", "user");
-
-            assert_that!(merged.to_style_string()).is_equal_to("color:user;".to_string());
-        }
-
-        #[test]
-        fn merge_empty_on_empty_yields_empty() {
-            let merged = Styles::new().merge(Styles::new());
-            assert_that!(merged.to_style_string()).is_equal_to(String::new());
+        fn empty_layers_merge_cleanly() {
+            let merged = Styles::new().with_fallback(Styles::new());
+            assert_that!(merged.to_style_string()).is_equal_to("");
             assert_that!(merged.is_reactive()).is_false();
-        }
 
-        #[test]
-        fn merge_empty_into_non_empty_preserves_self() {
-            let base = Styles::builder().with_unchecked("color", "red").build();
-            let merged = base.merge(Styles::new());
-            assert_that!(merged.to_style_string()).is_equal_to("color:red;".to_string());
-        }
-
-        #[test]
-        fn merge_non_empty_into_empty_appends_other() {
-            let merged =
-                Styles::new().merge(Styles::builder().with_unchecked("color", "red").build());
-            assert_that!(merged.to_style_string()).is_equal_to("color:red;".to_string());
+            let appended = Styles::new()
+                .with_fallback(Styles::new().with(UncheckedDeclaration::new("color", "red")));
+            assert_that!(appended.to_style_string()).is_equal_to("color:red;");
         }
     }
 
     mod reactivity {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
         use super::*;
 
         #[test]
-        fn is_reactive_is_false_for_purely_static_container() {
-            let styles = Styles::builder()
-                .with_unchecked("color", "red")
-                .with_optional_unchecked("padding", Some("8px"))
-                .with_optional_unchecked("margin", None::<&str>)
-                .build();
+        fn static_containers_are_not_reactive() {
+            let styles = Styles::new()
+                .with(UncheckedDeclaration::new("color", "red"))
+                .with(Some(UncheckedDeclaration::new("padding", "8px")))
+                .with(None::<UncheckedDeclaration>);
             assert_that!(styles.is_reactive()).is_false();
         }
 
         #[test]
-        fn is_reactive_is_true_when_an_optional_closure_entry_is_present() {
-            let toggle = Arc::new(AtomicBool::new(true));
-            let toggle_for_style = Arc::clone(&toggle);
-            let styles = Styles::builder()
-                .with_unchecked("color", "red")
-                .with_optional_unchecked("width", move || {
-                    Some(if toggle_for_style.load(Ordering::Relaxed) {
-                        "50%"
-                    } else {
-                        "100%"
-                    })
-                })
-                .build();
-            assert_that!(styles.is_reactive()).is_true();
-        }
-
-        #[test]
-        fn is_reactive_is_true_when_a_reactive_optional_is_present() {
-            let toggle = Arc::new(AtomicBool::new(true));
-            let toggle_for_style = Arc::clone(&toggle);
-            let styles = Styles::builder()
-                .with_optional_unchecked("color", move || {
-                    toggle_for_style.load(Ordering::Relaxed).then_some("red")
-                })
-                .build();
-            assert_that!(styles.is_reactive()).is_true();
-        }
-    }
-
-    #[cfg(feature = "typed-css")]
-    mod typed_css_rendering {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
-        };
-
-        use super::*;
-        use crate::{
-            css::{
-                CssColor, CssColorName, CssCustomProperty, LengthPercentageAuto,
-                LengthPercentageCalculation, Margin, NonNegativeLengthPercentage, Padding, Size,
-                css_custom_property, em, pct, px, rem, var, vh, vw,
-            },
-            property::{
-                BackgroundColorProperty, ColorProperty, HeightProperty, MarginProperty,
-                PaddingProperty, RightProperty, WidthProperty,
-            },
-        };
-
-        css_custom_property!(ACCENT_COLOR: CssColor = "--AccentColor");
-
-        #[test]
-        fn checked_custom_properties_and_vars_render_through_the_pipeline() {
-            let missing_color = CssCustomProperty::<CssColor>::new("--MissingColor");
-
-            let styles = Styles::builder()
-                .with(ACCENT_COLOR.declare(CssColor::Named(CssColorName::Fuchsia)))
-                .with(
-                    ColorProperty.declare(var(&ACCENT_COLOR, CssColor::Named(CssColorName::Black))),
-                )
-                .with(BackgroundColorProperty.declare(var(
-                    &missing_color,
-                    CssColor::Named(CssColorName::CurrentColor),
-                )))
-                .build();
-
-            assert_that!(styles.to_style_string()).is_equal_to(
-                "--AccentColor:fuchsia;color:var(--AccentColor, black);background-color:var(--MissingColor, currentcolor);"
-                    .to_string(),
-            );
-        }
-
-        #[test]
-        fn checked_calculations_render_through_the_styles_pipeline() {
+        fn closures_outlive_the_owner_that_created_them() {
+            let owner = leptos::prelude::Owner::new();
             let styles =
-                Styles::builder()
-                    .with(WidthProperty.declare(Size::Calculation(
-                        LengthPercentageCalculation::new(pct(100) - px(20)),
-                    )))
-                    .with(HeightProperty.declare(Size::Calculation(
-                        LengthPercentageCalculation::new(vh(50) + rem(1)),
-                    )))
-                    .build();
-
-            assert_that!(styles.to_style_string())
-                .is_equal_to("width:calc(100% - 20px);height:calc(50vh + 1rem);".to_string());
+                owner.with(|| Styles::new().with(|| UncheckedDeclaration::new("color", "red")));
+            drop(owner);
+            assert_that!(styles.to_style_string()).is_equal_to("color:red;");
         }
 
         #[test]
-        fn typed_units_render_through_the_styles_pipeline() {
-            let styles = Styles::builder()
-                .with(WidthProperty.declare(Size::from(NonNegativeLengthPercentage::new(pct(50)))))
-                .with(HeightProperty.declare(Size::from(NonNegativeLengthPercentage::new(vh(40)))))
-                .with(PaddingProperty.declare(Padding::all(em(1.5))))
-                .with(MarginProperty.declare(Margin::All(LengthPercentageAuto::from(rem(2)))))
-                .with(RightProperty.declare(LengthPercentageAuto::from(vw(10))))
-                .build();
-
-            assert_that!(styles.to_style_string()).is_equal_to(
-                "width:50%;height:40vh;padding:1.5em;margin:2rem;right:10vw;".to_string(),
-            );
-        }
-
-        #[test]
-        fn reactive_typed_value_renders_through_signal() {
-            let styles = Styles::builder()
-                .with_unchecked("color", "red")
-                .with_optional(move || {
-                    Some(
-                        WidthProperty
-                            .declare(Size::from(NonNegativeLengthPercentage::new(pct(50)))),
-                    )
-                })
-                .build();
-            assert_that!(styles.is_reactive()).is_true();
-            assert_that!(styles.to_style_string()).is_equal_to("color:red;width:50%;".to_string());
-        }
-
-        #[test]
-        fn reactive_complete_declaration_can_change_property_and_is_resolved_once() {
-            let use_background = Arc::new(AtomicBool::new(false));
-            let resolutions = Arc::new(AtomicUsize::new(0));
-            let use_background_for_declaration = Arc::clone(&use_background);
-            let resolutions_for_declaration = Arc::clone(&resolutions);
-
-            let styles = Styles::builder()
-                .with_reactive(move || {
-                    resolutions_for_declaration.fetch_add(1, Ordering::Relaxed);
-                    let color = CssColor::Named(CssColorName::Red);
-                    if use_background_for_declaration.load(Ordering::Relaxed) {
-                        BackgroundColorProperty.declare(color)
+        fn a_closure_can_switch_a_group_of_declarations() {
+            let compact = Arc::new(AtomicBool::new(true));
+            let flag = Arc::clone(&compact);
+            let styles = Styles::new()
+                .with(UncheckedDeclaration::new("display", "grid"))
+                .with(move || {
+                    if flag.load(Ordering::Relaxed) {
+                        Styles::new()
+                            .with(UncheckedDeclaration::new("gap", "2px"))
+                            .with(UncheckedDeclaration::new("padding", "4px"))
                     } else {
-                        ColorProperty.declare(color)
+                        Styles::new().with(UncheckedDeclaration::new("gap", "8px"))
                     }
                 })
-                .build();
+                .with_fallback(Styles::new().with(UncheckedDeclaration::new("padding", "16px")));
 
-            assert_that!(styles.to_style_string()).is_equal_to("color:red;".to_string());
-            assert_that!(resolutions.load(Ordering::Relaxed)).is_equal_to(1);
+            assert_that!(styles.is_reactive()).is_true();
+            assert_that!(styles.to_style_string()).is_equal_to("display:grid;gap:2px;padding:4px;");
+            compact.store(false, Ordering::Relaxed);
+            assert_that!(styles.to_style_string())
+                .is_equal_to("padding:16px;display:grid;gap:8px;");
+        }
 
-            use_background.store(true, Ordering::Relaxed);
-            assert_that!(styles.to_style_string()).is_equal_to("background-color:red;".to_string());
-            assert_that!(resolutions.load(Ordering::Relaxed)).is_equal_to(2);
+        #[test]
+        fn a_fallback_inside_a_group_stays_below_the_layer_of_the_group() {
+            let styles = Styles::new()
+                .with(UncheckedDeclaration::new("padding-top", "0"))
+                .with(|| {
+                    Styles::new()
+                        .with(UncheckedDeclaration::new("color", "red"))
+                        .with_fallback(
+                            Styles::new().with(UncheckedDeclaration::new("padding", "16px")),
+                        )
+                })
+                .with_fallback(Styles::new().with(UncheckedDeclaration::new("margin", "4px")));
+            assert_that!(styles.to_style_string())
+                .is_equal_to("margin:4px;padding:16px;padding-top:0;color:red;");
+
+            let hidden = Styles::new()
+                .with(UncheckedDeclaration::new("color", "red"))
+                .with(|| {
+                    Styles::new().with_fallback(
+                        Styles::new().with(UncheckedDeclaration::new("color", "blue")),
+                    )
+                });
+            assert_that!(hidden.to_style_string()).is_equal_to("color:red;");
+        }
+
+        #[test]
+        fn groups_keep_their_rank_inside_fallbacks_and_other_groups() {
+            let in_fallback = Styles::new()
+                .with(UncheckedDeclaration::new("color", "red"))
+                .with_fallback(Styles::new().with(|| {
+                    Styles::new()
+                        .with(UncheckedDeclaration::new("gap", "1px"))
+                        .with_fallback(
+                            Styles::new().with(UncheckedDeclaration::new("color", "blue")),
+                        )
+                }))
+                .with_fallback(Styles::new().with(UncheckedDeclaration::new("gap", "9px")));
+            assert_that!(in_fallback.to_style_string()).is_equal_to("gap:1px;color:red;");
+
+            let nested = Styles::new()
+                .with(UncheckedDeclaration::new("margin-top", "0"))
+                .with(|| {
+                    Styles::new().with(|| {
+                        Styles::new()
+                            .with(UncheckedDeclaration::new("color", "red"))
+                            .with_fallback(
+                                Styles::new().with(UncheckedDeclaration::new("margin", "4px")),
+                            )
+                    })
+                });
+            assert_that!(nested.to_style_string())
+                .is_equal_to("margin:4px;margin-top:0;color:red;");
+        }
+
+        #[test]
+        fn a_nested_reactive_styles_makes_the_receiver_reactive() {
+            let flag = Arc::new(AtomicBool::new(true));
+            let nested = Styles::new().with(toggled(&flag, "red"));
+            let styles = Styles::new()
+                .with(UncheckedDeclaration::new("gap", "1px"))
+                .with(nested);
+            assert_that!(styles.is_reactive()).is_true();
+            assert_that!(styles.to_style_string()).is_equal_to("gap:1px;color:red;");
+            flag.store(false, Ordering::Relaxed);
+            assert_that!(styles.to_style_string()).is_equal_to("gap:1px;");
+        }
+
+        #[test]
+        fn closures_are_reactive() {
+            let flag = Arc::new(AtomicBool::new(true));
+            let optional = Styles::new().with(toggled(&flag, "red"));
+            let always = Styles::new().with(|| UncheckedDeclaration::new("color", "red"));
+            assert_that!(optional.is_reactive()).is_true();
+            assert_that!(always.is_reactive()).is_true();
         }
     }
 }

@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use leptos_styles::Styles;
+use leptos_styles::{Styles, UncheckedDeclaration};
 
 /// Renders styles whose property names need normalization.
 ///
@@ -7,10 +7,9 @@ use leptos_styles::Styles;
 /// `--ThemeAccent` (a CSS custom property) must keep its original casing.
 #[component]
 pub fn NormalizedTarget() -> impl IntoView {
-    let styles = Styles::builder()
-        .with_unchecked(" Touch-Action ", "none")
-        .with_unchecked(" --ThemeAccent ", "tomato")
-        .build();
+    let styles = Styles::new()
+        .with(UncheckedDeclaration::new(" Touch-Action ", "none"))
+        .with(UncheckedDeclaration::new(" --ThemeAccent ", "tomato"));
 
     view! {
         <section>

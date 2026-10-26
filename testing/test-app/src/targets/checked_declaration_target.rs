@@ -1,12 +1,15 @@
 use leptos::prelude::*;
 use leptos_styles::{
-    css::{CssColor, css_custom_property, rgb},
-    property::{BackgroundColorProperty, ColorProperty},
+    css::property::{BACKGROUND_COLOR, COLOR},
+    css::{Color, custom_property, rgb},
 };
 
-css_custom_property!(DIRECT_ACCENT: CssColor = "--DirectAccent");
+custom_property!(DIRECT_ACCENT: Color = "--DirectAccent");
 
-/// Drives a direct checked declaration through its complete DOM lifecycle.
+/// Drives a checked declaration without `Styles` through its complete DOM lifecycle.
+///
+/// This target tests `typed-css`'s own `IntoStyle` for `Declaration` on purpose. `typed-css` has no
+/// browser test, and `leptos_styles::css` re-exports it, so this test app covers it.
 #[component]
 pub fn CheckedDeclarationTarget() -> impl IntoView {
     let (step, set_step) = signal(0_u8);
@@ -17,9 +20,9 @@ pub fn CheckedDeclarationTarget() -> impl IntoView {
             <div
                 id="checked-declaration-target"
                 style=move || match step.get() {
-                    0 => Some(ColorProperty.declare(rgb(255, 0, 0))),
-                    1 => Some(ColorProperty.declare(rgb(0, 0, 255))),
-                    2 => Some(BackgroundColorProperty.declare(rgb(0, 128, 0))),
+                    0 => Some(COLOR.declare(rgb(255, 0, 0))),
+                    1 => Some(COLOR.declare(rgb(0, 0, 255))),
+                    2 => Some(BACKGROUND_COLOR.declare(rgb(0, 128, 0))),
                     3 => Some(DIRECT_ACCENT.declare(rgb(255, 0, 255))),
                     _ => None,
                 }

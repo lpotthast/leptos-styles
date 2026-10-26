@@ -8,8 +8,7 @@ use std::time::Duration;
 
 use browser_test::thirtyfour::ChromiumLikeCapabilities;
 use browser_test::{
-    BrowserTestFailurePolicy, BrowserTestParallelism, BrowserTestRunner, BrowserTestVisibility,
-    BrowserTests, BrowserTimeouts, PauseConfig,
+    BrowserTestRunner, BrowserTests, Cancellation, FailurePolicy, Pause, Timeouts, Visibility,
 };
 use leptos_browser_test::{LeptosTestAppConfig, Report};
 
@@ -22,7 +21,7 @@ async fn browser_tests() -> Result<(), Report> {
         .start()
         .await?;
 
-    BrowserTestRunner::new()
+    BrowserTestRunner::new(Cancellation::on_shutdown_signals())
         .with_chrome_capabilities(|caps| {
             // `--no-sandbox` disables Chrome's child-process sandboxing. User-mode tarball
             // extraction can't set the setuid-root bit on `chrome_sandbox` (the privileged helper
@@ -37,18 +36,13 @@ async fn browser_tests() -> Result<(), Report> {
             caps.add_arg("--disable-dev-shm-usage")?;
             Ok(())
         })
-        .with_test_parallelism(BrowserTestParallelism::Sequential)
-        .with_failure_policy(BrowserTestFailurePolicy::RunAll)
-        .with_visibility(BrowserTestVisibility::from_env())
-        .with_pause(PauseConfig::from_env())
-        .with_timeouts(
-            BrowserTimeouts::builder()
-                .implicit_wait_timeout(Duration::from_secs(3))
-                .build(),
-        )
+        .with_failure_policy(FailurePolicy::RunAll)
+        .with_visibility(Visibility::from_env()?.unwrap_or_default())
+        .with_pause(Pause::from_env()?.unwrap_or_default())
+        .with_timeouts(Timeouts::new().with_implicit_wait(Duration::from_secs(3)))
         .run(
             app.base_url(),
-            BrowserTests::new().with(ui_tests::test_styles::StylesTests {}),
+            BrowserTests::sequential().with(ui_tests::test_styles::StylesTests {}),
         )
         .await?;
 

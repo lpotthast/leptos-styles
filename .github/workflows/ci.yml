@@ -26,73 +26,57 @@ jobs:
 
   check:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        no_default: [false, true]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets --locked ${{ matrix.no_default && '--no-default-features' || '' }}
+      - run: cargo check --all-targets --locked
 
   check-nightly:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        feature_args:
-          - --all-features
-          - --no-default-features --features nightly
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets --locked ${{ matrix.feature_args }}
+      # Leptos' nightly features let signals act as closures, which `IntoStyleEntry` accepts.
+      - run: cargo check --all-targets --locked --features leptos/nightly
 
   check-wasm:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        no_default: [false, true]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --target wasm32-unknown-unknown --locked ${{ matrix.no_default && '--no-default-features' || '' }}
+      - run: cargo check --target wasm32-unknown-unknown --locked
 
   clippy:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        no_default: [false, true]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --locked ${{ matrix.no_default && '--no-default-features' || '' }} -- -D warnings
+      - run: cargo clippy --all-targets --locked -- -D warnings
 
   test-unit:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        no_default: [false, true]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --lib --locked ${{ matrix.no_default && '--no-default-features' || '' }}
-      - run: cargo test --doc --locked ${{ matrix.no_default && '--no-default-features' || '' }}
+      - run: cargo test --lib --locked
+      - run: cargo test --doc --locked
 
-  test-typed-css-integration:
+  test-integration:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --test typed_css --locked
+      - run: cargo test --test declarations --locked
 
   duplicate-leptos-check:
     runs-on: ubuntu-latest
@@ -100,8 +84,10 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # `cargo tree -i leptos` fails when the lockfile holds two Leptos versions, because the
+      # package name is then ambiguous.
       - name: Verify a single Leptos version is resolved
-        run: cargo tree --features typed-css -i leptos
+        run: cargo tree -i leptos
 
   browser-test:
     runs-on: ubuntu-latest
@@ -118,7 +104,7 @@ jobs:
             testing/test-app
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-leptos,wasm-bindgen-cli@0.2.125
+          tool: cargo-leptos,wasm-bindgen-cli@0.2.129
       - uses: browser-actions/setup-chrome@v1
         with:
           install-chromedriver: true
@@ -126,27 +112,21 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        no_default: [false, true]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked ${{ matrix.no_default && '--no-default-features' || '' }}
+      - run: cargo build --release --locked
 
   doc:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        no_default: [false, true]
     env:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --no-deps --release --locked ${{ matrix.no_default && '--no-default-features' || '' }}
+      - run: cargo doc --no-deps --release --locked
 
   msrv:
     runs-on: ubuntu-latest

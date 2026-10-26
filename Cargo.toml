@@ -1,6 +1,6 @@
 [package]
 name = "leptos-styles"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89.0"
 authors = ["Lukas Potthast <privat@lukas-potthast.de>"]
@@ -26,39 +26,21 @@ exclude = [
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
-[features]
-default = ["typed-css"]
-# Enables Leptos' nightly closure impls. Reactive style sources use explicit
-# `move || ...` closures on every toolchain, so dependency feature unification
-# cannot introduce overlapping direct-signal conversions.
-nightly = ["leptos/nightly", "leptos-css?/nightly"]
-# Enables the checked declaration boundary, property selectors, and typed CSS grammars from
-# `leptos-css`. This is enabled by default. With default features disabled, only the explicit
-# unchecked string APIs and parsing escape hatches remain, and `leptos-css` is not in the
-# dependency tree.
-typed-css = ["dep:leptos-css"]
-
 [dependencies]
-leptos = { version = "0.8.19", default-features = false }
-leptos-css = { version = "0.1.0", optional = true }
-reactive_graph = "0.2.13"
+leptos = { version = "0.8.22", default-features = false }
 smallvec = "1"
-tracing = "0.1.44"
+typed-css = { version = "0.2.0", features = ["leptos"] }
 
 [dev-dependencies]
-assertr = { version = "0.6.0", default-features = false, features = ["std"] }
-leptos = { version = "0.8.19", features = ["csr", "hydrate"] }
+assertr = { version = "0.9.1", default-features = false, features = ["std"] }
+leptos = { version = "0.8.22", features = ["csr", "hydrate"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-browser-test = "0.4.0"
-leptos-browser-test = "0.3.0"
-tokio = { version = "1.52.3", default-features = false, features = ["macros", "rt", "rt-multi-thread", "time"] }
+browser-test = "0.7.0"
+leptos-browser-test = "0.4.0"
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "rt", "rt-multi-thread", "time"] }
+tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["ansi", "fmt", "registry"] }
-
-[[test]]
-name = "typed_css"
-path = "tests/typed_css.rs"
-required-features = ["typed-css"]
 
 [lints.rust]
 missing_docs = "warn"
@@ -67,15 +49,3 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(web_sys_unstable_apis)'] }
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
-doc_markdown = { level = "allow", priority = 1 }
-float_cmp = { level = "allow", priority = 1 }
-missing_errors_doc = { level = "allow", priority = 1 }
-missing_panics_doc = { level = "allow", priority = 1 }
-module_name_repetitions = { level = "allow", priority = 1 }
-must_use_candidate = { level = "allow", priority = 1 }
-needless_pass_by_value = { level = "allow", priority = 1 }
-option_if_let_else = { level = "allow", priority = 1 }
-similar_names = { level = "allow", priority = 1 }
-too_many_lines = { level = "allow", priority = 1 }
-used_underscore_binding = { level = "allow", priority = 1 }
-wildcard_imports = { level = "allow", priority = 1 }

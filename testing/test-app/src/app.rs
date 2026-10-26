@@ -1,9 +1,10 @@
 use leptos::prelude::*;
 
 use crate::targets::{
-    CalcTarget, CheckedDeclarationTarget, DrillingTarget, EmptyTarget, HydrateTarget,
-    ManagedTarget, MergeFallbackTarget, NormalizedTarget, ParseCssTarget, ReactiveTarget,
-    StaticTarget, TransitionTarget, TypedValueTarget, UnitsTarget, VarTarget,
+    CalcTarget, CheckedDeclarationTarget, CoexistTarget, DrillingTarget, EmptyTarget,
+    FallbackTarget, HydrateTarget, LayoutTarget, LifecycleTarget, ManagedTarget, NormalizedTarget,
+    OverlapTarget, ParseTarget, QuotedTarget, ReactiveTarget, ShorthandTarget, SingleTarget,
+    StaticTarget, TransitionTarget, TypedValueTarget, UnitsTarget, UpdateTarget, VarTarget,
 };
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -32,7 +33,7 @@ pub fn App() -> impl IntoView {
             <HydrateTarget />
             <ReactiveTarget />
             <NormalizedTarget />
-            <MergeFallbackTarget />
+            <FallbackTarget />
             <TypedValueTarget />
             <CheckedDeclarationTarget />
             <DrillingTarget />
@@ -42,7 +43,15 @@ pub fn App() -> impl IntoView {
             <VarTarget />
             <CalcTarget />
             <UnitsTarget />
-            <ParseCssTarget />
+            <ParseTarget />
+            <LayoutTarget />
+            <CoexistTarget />
+            <LifecycleTarget />
+            <QuotedTarget />
+            <OverlapTarget />
+            <UpdateTarget />
+            <ShorthandTarget />
+            <SingleTarget />
         </main>
     }
 }
