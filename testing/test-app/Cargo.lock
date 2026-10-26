@@ -2231,6 +2231,8 @@ dependencies = [
 [[package]]
 name = "typed-css"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cfe86c55db00f58e0601d88cdfbd9b8c7885abb9c2541bd2f06210878a18ddc"
 dependencies = [
  "leptos",
 ]
